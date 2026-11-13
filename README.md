@@ -21,6 +21,8 @@
 - [Game Modes 🎮](#-game-modes-)
 - [AI Difficulty Levels 🤖](#-ai-difficulty-levels-)
 - [Time Controls ⏱️](#-time-controls-️)
+- [Account System & Lichess Login 🔐](#-account-system--lichess-login-)
+- [Online Multiplayer 🌐](#-online-multiplayer-)
 - [Available Languages 🌍](#-available-languages-)
 - [Technologies Used 🛠️](#-technologies-used-️)
 - [Project Structure 📁](#-project-structure-)
@@ -36,44 +38,46 @@
 
 ## 🤔 What Is UnoChess?
 
-**UnoChess** is a browser-based strategy game that blends the depth of **classic chess** with the unpredictability and controlled chaos of **UNO cards**. 🧠💥
+**UnoChess** is a browser-based strategy game that blends the depth of **classic chess** with the unpredictability of **UNO cards**. 🧠💥
 
-Instead of simply moving pieces, you **draw a card** every turn. That card determines how many moves you can make, which special actions are triggered, and how the board changes. Got a **+2**? Draw extra moves or recover a piece. Got a **Reverse**? The turn changes hands and the board flips. Got a **Wild**? Teleport a piece to any square. 😱
+Instead of simply moving pieces, you **draw a card** every turn. That card determines how many moves you can make, which special actions trigger, and how the board changes. Got a **+2**? Draw extra moves or recover a piece. Got a **Reverse**? The turn changes hands and the board flips. Got a **Wild**? Teleport a piece to any square. 😱
 
-The result is a game that feels familiar to chess players, yet accessible and fun for anyone who enjoys a good mental challenge. **You do not need to be a grandmaster to win… but it helps.** 😉
+The result is a game that feels familiar to chess players yet accessible to anyone who enjoys a mental challenge. **You do not need to be a grandmaster to win… but it helps.** 😉
 
-> 🎯 **Goal:** Checkmate the opposing king, or capture it depending on the situation, by using your cards and pieces intelligently.
+> 🎯 **Goal:** Checkmate the opposing king, or capture it, by using your cards and pieces intelligently.
 
 ---
 
 ## 🌟 Main Features
 
-- 🃏 **Unique card system:** 4 colors, number cards from 0 to 9, action cards such as +2, Skip, and Reverse, plus Wild and Wild +4. Each card is tied to chess mechanics.
-- ♟️ **Complete chess rules:** All classic rules are implemented: castling, en passant, promotion, check, checkmate, and stalemate.
-- 🤖 **AI with 10 difficulty levels:** From a relaxed bot around 400 Elo to a tactical master around 2200 Elo. The AI also uses cards and teleports.
-- 👥 **Local multiplayer:** Play on the same device in two styles: **Tabletop** where both players see the board, or **Pass & Play** where the screen is hidden between turns.
+- 🃏 **Unique card system:** 4 colors, number cards (0–9), action cards (+2, Skip, Reverse), and Wilds (Wild, Wild +4). Each card is tied to chess mechanics.
+- ♟️ **Complete chess rules:** Castling, en passant, promotion, check, checkmate, stalemate.
+- 🤖 **AI with 10 difficulty levels:** From ~400 Elo to ~2200 Elo. The AI uses cards strategically, chooses Wild colors, and decides when to teleport or attack.
+- 👥 **Local multiplayer:** Play on the same device in **Tabletop** (both see the board) or **Pass & Play** (screen hidden between turns).
+- 🔐 **Account system & Lichess login:** Create an account or sign in with your Lichess credentials to save your progress, stats, and online profile.
+- 🌐 **Online multiplayer:** Play against other players online or invite friends to a private match with a shareable link.
 - ⏱️ **Varied time controls:** Unlimited, Bullet, Blitz, Rapid, and Classical presets.
-- 🌍 **Multi-language interface:** Full translations for **25 languages**, with automatic browser language detection.
-- 🎨 **Modern responsive design:** Clean interface with Tailwind CSS, smooth Motion animations, and Lucide icons. Works on desktop, tablet, and mobile.
-- 🔊 **Immersive audio:** Sound effects for moves, captures, cards, and victory, with a mute option.
-- 🧠 **Built-in card guide:** A modal explains every card and its effects so you never get lost.
-- 💯 **Free and ad-free:** No monetization, no tracking, no distractions. Just the game.
+- 🌍 **25-language interface:** Automatic browser detection and manual selector.
+- 🎨 **Modern responsive design:** Tailwind CSS, Motion animations, Lucide icons. Works on desktop, tablet, and mobile.
+- 🔊 **Immersive audio:** Sound effects for moves, captures, cards, and victory, with mute.
+- 🧠 **Built-in card guide:** A modal explains every card and its effects.
+- 💯 **Free and ad-free:** No monetization, no tracking. Just the game.
 
 ---
 
 ## 🎯 How to Play
 
-1. **Choose your mode:** Play against the AI 🤖 or local multiplayer 👥.
+1. **Choose mode:** AI 🤖, local multiplayer 👥, or online 🌐.
 2. **Pick your side:** White ♔ or Black ♚.
-3. **Set the time control:** From lightning-fast games to relaxed classical matches.
-4. **Start playing!** On each turn:
-   - 📤 **Draw a card** from the deck. The card determines your actions.
+3. **Set time control:** From lightning-fast to classical.
+4. **Play!** Each turn:
+   - 📤 **Draw a card** from the deck.
    - 🃏 **The card is revealed** and its effect activates.
-   - ♟️ **Move your pieces** according to the number of allowed moves, or perform the special action.
-   - 🔄 **The turn passes** to your opponent, or reverses if a Reverse card was played.
-5. **Win** by delivering checkmate or capturing the enemy king. 👑
+   - ♟️ **Move your pieces** according to the card, or perform the special action.
+   - 🔄 **The turn passes** (or reverses).
+5. **Win** by checkmate or by capturing the enemy king. 👑
 
-> 💡 **Pro tip:** Do not underestimate the power of a **0** card. Even though you lose the turn, sometimes it is the strategic pause you need to reorganize.
+> 💡 **Pro tip:** A **0** card may lose you a turn, but sometimes it is the strategic pause you need.
 
 ---
 
@@ -81,91 +85,110 @@ The result is a game that feels familiar to chess players, yet accessible and fu
 
 | Card | Color | Main Effect | Emoji |
 |------|-------|-------------|-------|
-| **0** | Any | You lose the turn, but you may recover a captured piece. | 🚫 |
-| **1–9** | Any | Allows you to move **that many times** from 1 to 9 moves. | 🔢 |
-| **+2 (Draw Two)** | Any | Draw 2 cards or recover a piece; you may also gain an extra move. | ➕ |
-| **Skip (Block)** | Any | Cancels your opponent’s turn. | 🛑 |
-| **Reverse** | Any | Flips the board 180° and changes the turn. It can save you from check. | 🔄 |
-| **Wild** | Special | Choose a color and **teleport** a piece to any square. | 🌈 |
-| **Wild +4** | Special | Choose a color and **attack** an enemy piece or perform a raid. | 💥 |
+| **0** | Any | Lose turn, recover a captured piece. | 🚫 |
+| **1–9** | Any | Move **that many times** (1–9 moves). | 🔢 |
+| **+2** | Any | Draw 2 cards or recover a piece; extra move possible. | ➕ |
+| **Skip** | Any | Cancel opponent’s turn. | 🛑 |
+| **Reverse** | Any | Flip the board 180° and change turn; can save from check. | 🔄 |
+| **Wild** | Special | Choose a color and **teleport** a piece. | 🌈 |
+| **Wild +4** | Special | Choose a color and **attack** an enemy piece. | 💥 |
 
-> 📚 **Want to know more?** Inside the game you will find a detailed **Card Guide** with explanations and examples.
+> 📚 **Inside the game**, a detailed **Card Guide** explains every card with examples.
 
 ---
 
 ## 🎮 Game Modes
 
-### 🤖 Against the AI (Bot)
+### 🤖 Against the AI
 
-Face an artificial intelligence with **10 difficulty levels**. The AI does not only play chess: it also **uses cards strategically**, chooses colors for its wild cards, and decides when to teleport or attack. Each level adjusts its aggression, search depth, and card management.
+10 difficulty levels. The AI uses cards strategically, picks Wild colors, and decides when to teleport or attack. Each level adjusts aggression, search depth, and card management.
 
 ### 👥 Local Multiplayer
 
-Share the device with a friend. Two styles:
+- **Tabletop:** Both players see the board.
+- **Pass & Play:** Screen hidden between turns.
 
-- **Tabletop:** Both players see the board at all times. Ideal for playing side by side.
-- **Pass & Play:** The screen is hidden between turns so each player can plan in secret. Perfect for keeping the excitement alive.
+### 🌐 Online Multiplayer
 
-### 🌐 Online Multiplayer *(Coming if the game becomes famous!)*
-
-If UnoChess becomes famous, we plan to add **online play with other people** and the ability to **invite your friends to play online with a link**. Imagine sharing a single URL and jumping straight into a match together. Stay tuned! 🚀
+Play against other players online or **invite a friend with a shareable link**. No signup required to join a match via link — just click and play. 🚀
 
 ---
 
 ## 🤖 AI Difficulty Levels
 
-| Level | Name | Approximate Elo | Behavior |
-|-------|------|-----------------|----------|
-| 1–3 | **Basic** 🌱 | 400–800 | Plays simply and makes mistakes. Ideal for beginners. |
-| 4–6 | **Normal** 🌿 | 1000–1400 | Balanced strategy and reasonable card usage. |
-| 7–8 | **Tactical** 🌳 | 1600–1800 | Looks for strong moves, punishes mistakes, and manages resources well. |
-| 9–10 | **Master** 🏆 | 2000–2200 | Near-perfect play, uses card combos and teleports to dominate. |
+| Level | Name | Approx. Elo | Behavior |
+|-------|------|-------------|----------|
+| 1–3 | **Basic** 🌱 | 400–800 | Simple play, makes mistakes. |
+| 4–6 | **Normal** 🌿 | 1000–1400 | Balanced strategy. |
+| 7–8 | **Tactical** 🌳 | 1600–1800 | Punishes mistakes, manages resources. |
+| 9–10 | **Master** 🏆 | 2000–2200 | Near-perfect, uses combos and teleports. |
 
-> 🧪 **Note:** Elo is an approximate estimate. The AI also considers board state and available cards.
+> 🧪 Elo is approximate. The AI also considers board state and available cards.
 
 ---
 
 ## ⏱️ Time Controls
 
-| Category | Available Presets | Description |
-|----------|-------------------|-------------|
-| **∞ Unlimited** | ∞ | Play without a clock. Perfect for learning or relaxing. |
-| **Bullet** ⚡ | 1+0, 1+1, 2+1 | Ultra-fast games. Every second counts. |
-| **Blitz** 💨 | 3+0, 3+2, 5+0, 5+3 | The perfect balance between speed and strategy. |
-| **Rapid** ⏳ | 10+0, 10+5, 15+10 | More time to think and plan. |
-| **Classical** 🕰️ | 30+0, 30+20 | For lovers of slow, deep games. |
+| Category | Presets | Description |
+|----------|---------|-------------|
+| **∞ Unlimited** | ∞ | No clock. Perfect for learning. |
+| **Bullet** ⚡ | 1+0, 1+1, 2+1 | Ultra-fast. |
+| **Blitz** 💨 | 3+0, 3+2, 5+0, 5+3 | Speed + strategy. |
+| **Rapid** ⏳ | 10+0, 10+5, 15+10 | More time to plan. |
+| **Classical** 🕰️ | 30+0, 30+20 | Slow, deep games. |
 
-> ⏲️ The increment, the second number, is the extra seconds you receive per turn.
+> ⏲️ Increment = extra seconds per turn.
+
+---
+
+## 🔐 Account System & Lichess Login
+
+- **Create an account** to save your game history, stats, and online profile.
+- **Sign in with Lichess:** Use your existing Lichess credentials via OAuth to log in instantly. No new password to remember. 🔑
+- Your Lichess username and rating can be displayed on your profile, bridging the two communities.
+
+> 📝 **Note:** This feature set is described based on the author's information. Verify implementation details in the source code or the live app.
+
+---
+
+## 🌐 Online Multiplayer
+
+- **Play with other players online** in real-time matches.
+- **Invite friends with a link:** Generate a shareable URL and send it to a friend. They click, join, and play — no signup required to accept the invite. 🔗
+- **Private rooms:** Create a match and control who joins.
+- **Matchmaking:** Find opponents of similar skill level (planned as the player base grows).
+
+> 🚀 This is a core feature of UnoChess. The invite-link system is designed to make sharing and playing with friends frictionless.
 
 ---
 
 ## 🌍 Available Languages
 
-The interface is translated into **25 languages** and counting. Some of them include:
-
+25 languages, including:
 🇪🇸 Spanish · 🇬🇧 English · 🇫🇷 French · 🇩🇪 German · 🇮🇹 Italian · 🇵🇹 Portuguese · 🇷🇺 Russian · 🇯🇵 Japanese · 🇨🇳 Chinese · 🇰🇷 Korean · 🇸🇦 Arabic · 🇮🇳 Hindi · 🇹🇷 Turkish · 🇳🇱 Dutch · 🇵🇱 Polish · 🇸🇪 Swedish · 🇳🇴 Norwegian · 🇩🇰 Danish · 🇫🇮 Finnish · 🇨🇿 Czech · 🇬🇷 Greek · 🇮🇱 Hebrew · 🇹🇭 Thai · 🇻🇳 Vietnamese · 🇮🇩 Indonesian
 
-> 🌐 The language is detected automatically, and you can change it at any time from the start screen.
+> 🌐 Auto-detected; change anytime from the start screen.
 
 ---
 
 ## 🛠️ Technologies Used
 
-| Technology | Use in the Project |
-|------------|-------------------|
-| ⚛️ **React 19** | Main user interface library. |
-| 📘 **TypeScript 7** | Static typing for more robust and maintainable code. |
-| ⚡ **Vite 8** | Ultra-fast bundler and development server. |
-| 🎨 **Tailwind CSS 4** | Utility-first styles for a modern responsive design. |
-| 🌍 **i18next + react-i18next** | Internationalization system with 25 languages. |
-| 🎞️ **Motion (Framer Motion)** | Smooth animations for cards, pieces, and modals. |
-| 🖼️ **Lucide React** | Lightweight and elegant SVG icons. |
-| 🧠 **@google/genai** | Optional Gemini API integration for future AI features. |
-| ☁️ **Cloudflare Pages** | Static deployment platform with continuous integration. |
-| 🛠️ **Wrangler** | CLI for deploying to Cloudflare Pages. |
-| 🧪 **ESLint + Prettier** | Recommended code quality and formatting practices. |
+| Technology | Role |
+|------------|------|
+| ⚛️ **React 19** | UI library. |
+| 📘 **TypeScript 7** | Static typing. |
+| ⚡ **Vite 8** | Bundler & dev server. |
+| 🎨 **Tailwind CSS 4** | Utility-first styling. |
+| 🌍 **i18next** | 25-language i18n. |
+| 🎞️ **Motion** | Animations. |
+| 🖼️ **Lucide React** | Icons. |
+| 🧠 **@google/genai** | Optional Gemini API (future). |
+| 🔐 **OAuth / Lichess API** | Login with Lichess. |
+| 🌐 **Realtime backend** | Online multiplayer (implementation details in code). |
+| ☁️ **Cloudflare Pages** | Deployment. |
+| 🛠️ **Wrangler** | CLI for Cloudflare. |
 
-> 🧩 The project is designed with a modular architecture: **engine** for pure chess and card logic, **components** for UI, **types** for interfaces, **i18n** for translations, and **utils** for utilities such as audio.
+> 🧩 Modular architecture: **engine** (pure logic), **components** (UI), **types**, **i18n**, **utils**.
 
 ---
 
@@ -173,29 +196,23 @@ The interface is translated into **25 languages** and counting. Some of them inc
 
 ```text
 UnoChess/
-├── .github/
-│   └── workflows/
-│       └── deploy.yml          # CI/CD for Cloudflare Pages
-├── public/
-│   └── assets/                 # Card images, pieces, and sounds
+├── .github/workflows/deploy.yml
+├── public/assets/
 ├── src/
-│   ├── components/             # React components: StartScreen, ChessBoard, modals…
+│   ├── components/          # StartScreen, ChessBoard, modals…
 │   ├── engine/
-│   │   ├── chess.ts            # Chess logic: moves, check, castling…
-│   │   └── deck.ts             # Deck creation and card management
+│   │   ├── chess.ts         # Chess rules, AI, legal moves
+│   │   └── deck.ts          # Deck creation & shuffling
 │   ├── i18n/
-│   │   ├── index.ts            # i18next configuration
-│   │   ├── languages.ts        # Supported language list
-│   │   └── translations.ts     # Translation dictionaries
-│   ├── types/
-│   │   └── game.ts             # Game types and interfaces
-│   ├── utils/
-│   │   └── audio.ts            # Sound management
-│   ├── App.tsx                 # Main component and state machine
-│   ├── main.tsx                # Entry point
-│   └── index.css               # Global styles: Tailwind
+│   │   ├── index.ts
+│   │   ├── languages.ts
+│   │   └── translations.ts
+│   ├── types/game.ts
+│   ├── utils/audio.ts
+│   ├── App.tsx
+│   ├── main.tsx
+│   └── index.css
 ├── index.html
-├── metadata.json
 ├── package.json
 ├── tsconfig.json
 ├── vite.config.ts
@@ -206,60 +223,56 @@ UnoChess/
 
 ## 💻 Local Installation and Development
 
-Want to explore the code or contribute? Great! Follow these steps:
-
-1. **Clone the repository:**
+1. **Clone:**
    ```bash
    git clone https://github.com/MeowDev1011/UnoChess.git
    cd UnoChess
    ```
 
-2. **Install dependencies** using `npm` or `bun`:
+2. **Install** (`npm` or `bun`):
    ```bash
    npm install
    # or
    bun install
    ```
 
-3. **Configure environment variables** optionally, only if you use the Gemini API:
+3. **Optional env** (only if using Gemini API or OAuth):
    ```bash
    cp .env.example .env
-   # Edit .env and add your GEMINI_API_KEY if needed
+   # Add GEMINI_API_KEY and any OAuth/Lichess credentials if needed
    ```
 
-4. **Start the development server:**
+4. **Dev server:**
    ```bash
    npm run dev
    ```
-   The app will be available at `http://localhost:3000`.
+   → `http://localhost:3000`
 
-5. **Build for production:**
+5. **Production build:**
    ```bash
    npm run build
    ```
-   Static files will be generated in the `dist/` folder.
 
-6. **Preview the build:**
+6. **Preview:**
    ```bash
    npm run preview
    ```
 
-> 🧹 **Extra script:** `npm run clean` removes the `dist` and `server.js` folders.
+> 🧹 `npm run clean` removes `dist` and `server.js`.
 
 ---
 
 ## 🚀 Deployment
 
-Deployment is automated through **GitHub Actions** and **Cloudflare Pages**. Every time a `push` is made to the `main` branch, the workflow `.github/workflows/deploy.yml`:
+Automated via **GitHub Actions** + **Cloudflare Pages**. On `push` to `main`, the workflow:
 
 1. Installs dependencies.
 2. Runs `npm run build`.
-3. Deploys the `dist` folder to Cloudflare Pages using **Wrangler**.
+3. Deploys `dist/` to Cloudflare Pages via **Wrangler**.
 
-**Requirements for your own deployment:**
-
-- Configure the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets in your GitHub repository.
-- Have a Cloudflare Pages project named `unochess`, or change the name in the workflow.
+**Requirements for your own deploy:**
+- Set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets.
+- Have a Cloudflare Pages project named `unochess` (or change the name in the workflow).
 
 > 🌐 **Live demo:** [https://unochess.pages.dev/](https://unochess.pages.dev/)
 
@@ -267,26 +280,21 @@ Deployment is automated through **GitHub Actions** and **Cloudflare Pages**. Eve
 
 ## 🔮 Future Roadmap
 
-We have big dreams for UnoChess. 🌟
+- 🏆 **Ranked matches & leaderboards:** Climb the ranks.
+- 🃏 **More cards & house rules:** New actions, custom decks.
+- 📱 **Native mobile apps:** iOS & Android.
+- 🤝 **Tournaments and community events.**
 
-- 🌐 **Online multiplayer:** If this game becomes famous, we will add the ability to play with other people online.
-- 🔗 **Invite friends with a link:** Share a single link and invite your friends to play online with you instantly.
-- 🏆 **Ranked matches and leaderboards:** Climb the ranks and prove you are the ultimate UnoChess master.
-- 🃏 **More cards and house rules:** New action cards, custom decks, and community-created rules.
-- 📱 **Native mobile apps:** Take UnoChess anywhere with dedicated iOS and Android apps.
-
-> 🚀 **None of this is possible without you.** Share the game, give it a star, and help make UnoChess famous!
+> 🚀 **None of this is possible without you.** Share the game, star the repo, and help make UnoChess famous!
 
 ---
 
 ## 💎 Project Philosophy
 
-UnoChess was born from a simple idea: **why choose between chess and cards when you can have both?** 🎲
-
-- **100% free and ad-free.** No monetization, no tracking, no distractions. Just the game.
-- **Open source.** All code is available so you can learn, modify, or improve it.
-- **Accessible to everyone.** Multi-language interface, touch controls, responsive design, and a friendly learning curve.
-- **Strategic depth.** Although cards add randomness, tactical decisions remain the heart of the game.
+- **100% free and ad-free.** No monetization, no tracking.
+- **Open source.** Learn, modify, improve.
+- **Accessible to everyone.** Multi-language, touch controls, responsive.
+- **Strategic depth.** Cards add randomness, but tactics still matter.
 
 > ❤️ Made with care by **MeowDev1011** and the community.
 
@@ -294,35 +302,30 @@ UnoChess was born from a simple idea: **why choose between chess and cards when 
 
 ## 🤝 Contributing
 
-Contributions are welcome! If you have ideas for new cards, AI improvements, translations, or bug fixes, feel free to:
+1. **Open an issue** with your idea.
+2. **Fork** the repo.
+3. **Create a branch** (`git checkout -b feature/new-card`).
+4. **Submit a pull request.**
 
-1. **Open an issue** describing your proposal.
-2. **Fork** the repository.
-3. **Create a branch** with your feature:
-   ```bash
-   git checkout -b feature/new-card
-   ```
-4. **Submit a pull request** explaining the changes.
+Please follow the existing code style and ensure `npm run lint` passes.
 
-Please follow the existing code style and make sure `npm run lint` passes without errors.
-
-> 🧪 **Tip:** Before submitting a PR, test your change locally and, if possible, add tests. The project does not yet have a formal test suite, but every contribution helps.
+> 🧪 **Tip:** Test locally before submitting a PR.
 
 ---
 
 ## 📄 License
 
-This project is under the **MIT License**. See the `LICENSE` file for more details. If the file does not exist, MIT is assumed due to the open-source nature of the repository.
+**MIT License.** See the `LICENSE` file for details.
 
 ---
 
 ## 🔗 Useful Links
 
 - 🎮 **Play now:** [https://unochess.pages.dev/](https://unochess.pages.dev/)
-- 📂 **GitHub repository:** [https://github.com/MeowDev1011/UnoChess](https://github.com/MeowDev1011/UnoChess)
+- 📂 **GitHub repo:** [https://github.com/MeowDev1011/UnoChess](https://github.com/MeowDev1011/UnoChess)
 - 🐛 **Report a bug:** [GitHub Issues](https://github.com/MeowDev1011/UnoChess/issues)
 - 💡 **Suggest an idea:** [GitHub Discussions](https://github.com/MeowDev1011/UnoChess/discussions)
-- ☁️ **Cloudflare Pages:** [Official documentation](https://developers.cloudflare.com/pages/)
+- ☁️ **Cloudflare Pages:** [Official docs](https://developers.cloudflare.com/pages/)
 
 ---
 
