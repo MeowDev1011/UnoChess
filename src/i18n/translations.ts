@@ -161,6 +161,17 @@ export interface TranslationDict {
   onlineConnectBtn: string;
   onlineConnecting: string;
   onlineAuthError: string;
+  onlineCreateMiniAccountBtn: string;
+  onlineDeviceSavedHint: string;
+  onlineOrDivider: string;
+  onlineLichessBtn: string;
+  onlineLichessLinkBtn: string;
+  onlineLichessSub: string;
+  onlineLichessConnecting: string;
+  onlineLichessError: string;
+  onlineLichessPopupBlocked: string;
+  onlineLichessOpenLink: string;
+  onlineLichessBadge: string;
   onlineNicknameTitle: string;
   onlineNicknameDesc: string;
   onlineNicknamePlaceholder: string;
@@ -371,16 +382,27 @@ const es: TranslationDict = {
   onlineLobbyBtn: 'Entrar al Lobby y Enlace Mágico',
   onlineLobbyTitle: 'Lobby en Línea',
   onlineBackMenu: 'Volver',
-  onlineConnectTitle: 'Conecta tu Perfil de Jugador',
-  onlineConnectDesc: 'Inicia sesión para guardar tu apodo único, tu puntuación Elo y jugar con personas reales o por enlace mágico.',
-  onlineConnectBtn: 'Conectar Cuenta',
+  onlineConnectTitle: 'Crea tu Mini Cuenta',
+  onlineConnectDesc: 'Solo escribe tu usuario para crear tu mini cuenta en este dispositivo, o inicia sesión opcionalmente con Lichess para usar tu usuario y Elo.',
+  onlineConnectBtn: 'Crear Mini Cuenta',
   onlineConnecting: 'Conectando...',
   onlineAuthError: 'No se pudo completar la conexión. Intenta de nuevo.',
-  onlineNicknameTitle: 'Elige tu Apodo',
-  onlineNicknameDesc: 'Tu apodo quedará guardado con tu UID para que otros jugadores te reconozcan en el lobby.',
+  onlineCreateMiniAccountBtn: 'Entrar con este Usuario',
+  onlineDeviceSavedHint: 'Tu mini cuenta y puntuación Elo se guardan automáticamente en este dispositivo y en la nube.',
+  onlineOrDivider: 'o también (opcional)',
+  onlineLichessBtn: 'Ingresar sesión con Lichess',
+  onlineLichessLinkBtn: 'Conectar Lichess',
+  onlineLichessSub: 'Opcional · Solicita tu usuario y Elo oficial de Lichess',
+  onlineLichessConnecting: 'Conectando con Lichess...',
+  onlineLichessError: 'No se pudo iniciar sesión con Lichess. Intenta de nuevo.',
+  onlineLichessPopupBlocked: 'El navegador bloqueó la ventana emergente. Pulsa el botón para abrir Lichess directamente.',
+  onlineLichessOpenLink: 'Abrir autorización de Lichess',
+  onlineLichessBadge: 'Lichess · {{user}}',
+  onlineNicknameTitle: 'Tu Usuario de Jugador',
+  onlineNicknameDesc: 'Este usuario se guarda en tu mini cuenta del dispositivo y en el servidor para jugar en el lobby.',
   onlineNicknamePlaceholder: 'Ej. GranMaestro99',
-  onlineNicknameSave: 'Guardar Apodo',
-  onlineNicknameInvalid: 'El apodo debe tener entre 2 y 20 caracteres.',
+  onlineNicknameSave: 'Guardar Usuario',
+  onlineNicknameInvalid: 'El usuario debe tener entre 2 y 20 caracteres.',
   onlineEloLabel: '{{elo}} Elo',
   onlineRecordLabel: '{{wins}}V · {{losses}}D',
   onlineTabPublic: 'Lobby Público',
@@ -586,16 +608,27 @@ const en: TranslationDict = {
   onlineLobbyBtn: 'Open Lobby & Magic Link',
   onlineLobbyTitle: 'Online Lobby',
   onlineBackMenu: 'Back',
-  onlineConnectTitle: 'Connect Your Player Profile',
-  onlineConnectDesc: 'Sign in to save your unique nickname, track your Elo rating, and play real people or friends via magic link.',
-  onlineConnectBtn: 'Connect Account',
+  onlineConnectTitle: 'Create Your Mini Account',
+  onlineConnectDesc: 'Just enter a username to create your mini account on this device, or optionally sign in with Lichess to import your username and Elo.',
+  onlineConnectBtn: 'Create Mini Account',
   onlineConnecting: 'Connecting...',
   onlineAuthError: 'Connection failed. Please try again.',
-  onlineNicknameTitle: 'Choose Your Nickname',
-  onlineNicknameDesc: 'Your nickname is saved to your UID so other players can recognize you in the lobby.',
+  onlineCreateMiniAccountBtn: 'Play with This Username',
+  onlineDeviceSavedHint: 'Your mini account and Elo rating are saved automatically on this device and synced online.',
+  onlineOrDivider: 'or optional',
+  onlineLichessBtn: 'Sign in with Lichess',
+  onlineLichessLinkBtn: 'Connect Lichess',
+  onlineLichessSub: 'Optional · Uses Lichess scopes for your username & Elo',
+  onlineLichessConnecting: 'Connecting to Lichess...',
+  onlineLichessError: 'Could not complete Lichess sign-in. Please try again.',
+  onlineLichessPopupBlocked: 'Popup was blocked by your browser. Tap below to open Lichess directly.',
+  onlineLichessOpenLink: 'Open Lichess Authorization',
+  onlineLichessBadge: 'Lichess · {{user}}',
+  onlineNicknameTitle: 'Choose Your Username',
+  onlineNicknameDesc: 'Your username is saved to your device mini account and online profile.',
   onlineNicknamePlaceholder: 'e.g. GrandMaster99',
-  onlineNicknameSave: 'Save Nickname',
-  onlineNicknameInvalid: 'Nickname must be between 2 and 20 characters.',
+  onlineNicknameSave: 'Save Username',
+  onlineNicknameInvalid: 'Username must be between 2 and 20 characters.',
   onlineEloLabel: '{{elo}} Elo',
   onlineRecordLabel: '{{wins}}W · {{losses}}L',
   onlineTabPublic: 'Public Lobby',

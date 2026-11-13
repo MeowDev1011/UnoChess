@@ -1,18 +1,18 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { User } from 'firebase/auth';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ArrowLeft,
   Check,
   Clock,
   Copy,
   Edit3,
+  ExternalLink,
   Link2,
   LogOut,
   Share2,
   Sparkles,
   Swords,
   Trophy,
-  UserCheck,
+  UserPlus,
   Users,
   X,
 } from 'lucide-react';
@@ -32,35 +32,38 @@ import {
   createLobbyChallenge,
   createMagicLinkMatch,
   joinMagicLinkMatch,
-  savePlayerNickname,
-  signInWithAccount,
-  signOutAccount,
+  loginWithLichessProfile,
+  saveDevicePlayerAccount,
   subscribeMatch,
   subscribeMyMatchedChallenges,
   subscribeOpenChallenges,
 } from '../services/onlineService';
+import {
+  createLichessOAuthUrl,
+  exchangeLichessCodeForProfile,
+  LICHESS_CB_STORAGE_KEY,
+} from '../services/lichessService';
+import { OfficialLichessLogo } from './OfficialLichessLogo';
 import { sound } from '../utils/audio';
 
 interface OnlineLobbyViewProps {
-  authUser: User | null;
-  authReady: boolean;
   profile: PlayerProfile | null;
   profileLoading: boolean;
   pendingJoinMatchId: string | null;
   onClearPendingJoin: () => void;
   onProfileSaved: (profile: PlayerProfile) => void;
+  onSwitchAccount: () => void;
   onEnterMatch: (matchId: string, joinNotice?: string) => void;
   onBack: () => void;
 }
 
 export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
-  authUser,
-  authReady,
   profile,
   profileLoading,
   pendingJoinMatchId,
   onClearPendingJoin,
   onProfileSaved,
+  onSwitchAccount,
   onEnterMatch,
   onBack,
 }) => {
@@ -72,14 +75,18 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
   );
   const [preferredColor, setPreferredColor] = useState<PreferredColor>('random');
 
-  const [authBusy, setAuthBusy] = useState(false);
-  const [authError, setAuthError] = useState('');
-
-  // Nickname form state
+  // Device mini-account / nickname form state
   const [editingNickname, setEditingNickname] = useState(false);
   const [nicknameInput, setNicknameInput] = useState('');
   const [nicknameError, setNicknameError] = useState('');
   const [savingNickname, setSavingNickname] = useState(false);
+
+  // Optional Lichess OAuth state
+  const [lichessBusy, setLichessBusy] = useState(false);
+  const [lichessError, setLichessError] = useState('');
+  const [lichessFallbackUrl, setLichessFallbackUrl] = useState<string | null>(null);
+  const lichessHandledCodeRef = useRef<string | null>(null);
+  const lichessPollRef = useRef<number | null>(null);
 
   // Lobby state
   const [challenges, setChallenges] = useState<LobbyChallenge[]>([]);
@@ -101,6 +108,9 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      if (lichessPollRef.current !== null) {
+        clearInterval(lichessPollRef.current);
+      }
     };
   }, []);
 
@@ -110,10 +120,88 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
     }
   }, [editingNickname, profile]);
 
+  const completeLichessCallback = useCallback(
+    async (code: string, state: string, error?: string) => {
+      if (lichessPollRef.current !== null) {
+        clearInterval(lichessPollRef.current);
+        lichessPollRef.current = null;
+      }
+      if (error || !code || !state) {
+        if (mountedRef.current) {
+          setLichessBusy(false);
+          setLichessError(t('onlineLichessError'));
+        }
+        return;
+      }
+      if (lichessHandledCodeRef.current === code) return;
+      lichessHandledCodeRef.current = code;
+
+      try {
+        const lichessData = await exchangeLichessCodeForProfile(code, state);
+        const saved = await loginWithLichessProfile(lichessData);
+        if (!mountedRef.current) return;
+        sound.playSpecial();
+        setLichessFallbackUrl(null);
+        setLichessError('');
+        setEditingNickname(false);
+        onProfileSaved(saved);
+      } catch {
+        if (mountedRef.current) {
+          setLichessError(t('onlineLichessError'));
+        }
+      } finally {
+        if (mountedRef.current) {
+          setLichessBusy(false);
+        }
+      }
+    },
+    [onProfileSaved, t]
+  );
+
+  // Listen for Lichess OAuth callback via postMessage or localStorage
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      const data = event.data as {
+        type?: string;
+        code?: string;
+        state?: string;
+        error?: string;
+      } | null;
+      if (data?.type === 'LICHESS_OAUTH_CALLBACK') {
+        void completeLichessCallback(data.code || '', data.state || '', data.error);
+      }
+    };
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== LICHESS_CB_STORAGE_KEY || !event.newValue) return;
+      try {
+        const data = JSON.parse(event.newValue) as {
+          type?: string;
+          code?: string;
+          state?: string;
+          error?: string;
+        };
+        if (data?.type === 'LICHESS_OAUTH_CALLBACK') {
+          void completeLichessCallback(data.code || '', data.state || '', data.error);
+        }
+      } catch {
+        // ignore malformed payload
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      window.removeEventListener('message', handleMessage);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, [completeLichessCallback]);
+
   // Subscribe to real open challenges and matched transitions
   const profileUid = profile?.uid ?? '';
   useEffect(() => {
-    if (!authUser || !profileUid) return;
+    if (!profileUid) return;
     const unsubOpen = subscribeOpenChallenges((list) => {
       setChallenges(list);
     });
@@ -125,7 +213,7 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
       unsubOpen();
       unsubMatched();
     };
-  }, [authUser, onEnterMatch, profileUid]);
+  }, [onEnterMatch, profileUid]);
 
   // Subscribe to host's waiting Magic Link match so host gets notified the instant friend joins
   useEffect(() => {
@@ -146,9 +234,9 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
     return () => unsub();
   }, [magicMatchId, onEnterMatch, t]);
 
-  // Handle ?join=<matchId> magic link safely once user is signed in and has a nickname
+  // Handle ?join=<matchId> magic link safely once user has a mini-account / Lichess profile
   useEffect(() => {
-    if (!pendingJoinMatchId || !authUser || !profile) return;
+    if (!pendingJoinMatchId || !profile) return;
     if (attemptedJoinRef.current === pendingJoinMatchId) return;
     attemptedJoinRef.current = pendingJoinMatchId;
 
@@ -177,24 +265,10 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
         if (mountedRef.current) setJoiningDeepLink(false);
       }
     })();
-  }, [authUser, onClearPendingJoin, onEnterMatch, pendingJoinMatchId, profile, t]);
-
-  const handleConnect = async () => {
-    sound.playClick();
-    setAuthBusy(true);
-    setAuthError('');
-    try {
-      await signInWithAccount();
-    } catch {
-      setAuthError(t('onlineAuthError'));
-    } finally {
-      setAuthBusy(false);
-    }
-  };
+  }, [onClearPendingJoin, onEnterMatch, pendingJoinMatchId, profile, t]);
 
   const handleSaveNickname = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!authUser) return;
     const trimmed = nicknameInput.trim();
     if (trimmed.length < 2 || trimmed.length > 20) {
       setNicknameError(t('onlineNicknameInvalid'));
@@ -204,13 +278,67 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
     setSavingNickname(true);
     setNicknameError('');
     try {
-      const saved = await savePlayerNickname(authUser.uid, trimmed);
+      const saved = await saveDevicePlayerAccount(trimmed, editingNickname ? profile : null);
       onProfileSaved(saved);
       setEditingNickname(false);
     } catch {
-      setNicknameError(t('onlineNicknameInvalid'));
+      setNicknameError(t('onlineAuthError'));
     } finally {
       setSavingNickname(false);
+    }
+  };
+
+  const handleLichessLogin = async () => {
+    sound.playClick();
+    setLichessBusy(true);
+    setLichessError('');
+    setLichessFallbackUrl(null);
+
+    try {
+      const { authUrl } = await createLichessOAuthUrl();
+      // Open Lichess OAuth provider URL directly in popup
+      const popup = window.open(authUrl, 'unochess_lichess_oauth', 'width=540,height=720');
+      if (!popup) {
+        setLichessBusy(false);
+        setLichessFallbackUrl(authUrl);
+        setLichessError(t('onlineLichessPopupBlocked'));
+        return;
+      }
+
+      if (lichessPollRef.current !== null) {
+        clearInterval(lichessPollRef.current);
+      }
+      lichessPollRef.current = window.setInterval(() => {
+        try {
+          const raw = localStorage.getItem(LICHESS_CB_STORAGE_KEY);
+          if (raw) {
+            const data = JSON.parse(raw) as {
+              type?: string;
+              code?: string;
+              state?: string;
+              error?: string;
+            };
+            if (data?.type === 'LICHESS_OAUTH_CALLBACK') {
+              void completeLichessCallback(data.code || '', data.state || '', data.error);
+              return;
+            }
+          }
+          if (popup.closed) {
+            if (lichessPollRef.current !== null) {
+              clearInterval(lichessPollRef.current);
+              lichessPollRef.current = null;
+            }
+            if (mountedRef.current) {
+              setLichessBusy(false);
+            }
+          }
+        } catch {
+          // ignore cross-origin check while popup is on lichess.org
+        }
+      }, 500);
+    } catch {
+      setLichessBusy(false);
+      setLichessError(t('onlineLichessError'));
     }
   };
 
@@ -450,14 +578,16 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
           {t('onlineLobbyTitle')}
         </h1>
 
-        {authUser ? (
+        {profile ? (
           <button
             type="button"
             onClick={() => {
               sound.playClick();
-              void signOutAccount();
+              setEditingNickname(false);
+              onSwitchAccount();
             }}
             aria-label={t('onlineSignOutBtn')}
+            title={t('onlineSignOutBtn')}
             className="flex min-h-[40px] items-center gap-1 rounded-2xl border-2 border-slate-950 bg-slate-900/90 px-2.5 py-1.5 text-[11px] font-bold text-slate-300 shadow transition hover:text-rose-300"
           >
             <LogOut className="h-3.5 w-3.5" />
@@ -482,55 +612,29 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
 
       {/* Main Content */}
       <div className="mt-3 flex flex-1 flex-col">
-        {!authReady || profileLoading || joiningDeepLink ? (
+        {profileLoading || joiningDeepLink ? (
           <div className="my-auto rounded-3xl border-4 border-slate-950 bg-slate-900/90 p-6 text-center shadow-2xl backdrop-blur-md">
             <div className="mx-auto mb-3 h-10 w-10 animate-spin rounded-full border-4 border-amber-400 border-t-transparent" />
             <p className="text-sm font-extrabold text-amber-200">
               {joiningDeepLink ? t('onlineJoiningMatch') : t('onlineConnecting')}
             </p>
           </div>
-        ) : !authUser ? (
-          /* Step 1: Connect Account */
-          <div className="my-auto rounded-3xl border-4 border-slate-950 bg-slate-900/95 p-5 text-center shadow-2xl backdrop-blur-md">
-            <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl border-3 border-slate-950 bg-amber-400 text-slate-950 shadow">
-              <UserCheck className="h-7 w-7" />
-            </div>
-            <h2 className="font-display text-outline-sm text-2xl font-bold text-amber-300">
-              {t('onlineConnectTitle')}
-            </h2>
-            <p className="mt-1.5 text-xs leading-relaxed text-slate-300">
-              {t('onlineConnectDesc')}
-            </p>
-
-            {authError && (
-              <p className="mt-2 text-xs font-bold text-rose-400">{authError}</p>
-            )}
-
-            <button
-              type="button"
-              disabled={authBusy}
-              onClick={handleConnect}
-              className="mt-5 flex min-h-[48px] w-full items-center justify-center gap-2 rounded-2xl border-3 border-slate-950 bg-gradient-to-b from-amber-300 via-amber-400 to-orange-500 px-5 py-2.5 text-base font-extrabold text-slate-950 shadow-[0_4px_0_#0f172a] transition hover:brightness-105 active:translate-y-0.5 active:shadow-none disabled:opacity-60"
-            >
-              {authBusy ? t('onlineConnecting') : t('onlineConnectBtn')}
-            </button>
-          </div>
         ) : !profile || editingNickname ? (
-          /* Step 2: Nickname linked to UID */
-          <form
-            onSubmit={handleSaveNickname}
-            className="my-auto rounded-3xl border-4 border-slate-950 bg-slate-900/95 p-5 shadow-2xl backdrop-blur-md"
-          >
+          /* Device Mini-Account + Optional Lichess OAuth */
+          <div className="my-auto rounded-3xl border-4 border-slate-950 bg-slate-900/95 p-5 shadow-2xl backdrop-blur-md">
             <div className="text-center">
+              <div className="mx-auto mb-2.5 flex h-12 w-12 items-center justify-center rounded-2xl border-3 border-slate-950 bg-amber-400 text-slate-950 shadow">
+                <UserPlus className="h-6 w-6" />
+              </div>
               <h2 className="font-display text-outline-sm text-2xl font-bold text-amber-300">
-                {t('onlineNicknameTitle')}
+                {editingNickname ? t('onlineNicknameTitle') : t('onlineConnectTitle')}
               </h2>
               <p className="mt-1 text-xs leading-relaxed text-slate-300">
-                {t('onlineNicknameDesc')}
+                {editingNickname ? t('onlineNicknameDesc') : t('onlineConnectDesc')}
               </p>
             </div>
 
-            <div className="mt-4">
+            <form onSubmit={handleSaveNickname} className="mt-4">
               <input
                 type="text"
                 minLength={2}
@@ -544,34 +648,92 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
               {nicknameError && (
                 <p className="mt-1.5 text-xs font-bold text-rose-400">{nicknameError}</p>
               )}
+
+              <div className="mt-3 flex gap-2">
+                {profile && editingNickname && (
+                  <button
+                    type="button"
+                    onClick={() => setEditingNickname(false)}
+                    className="flex min-h-[46px] items-center justify-center rounded-2xl border-2 border-slate-700 bg-slate-800 px-4 text-xs font-bold text-slate-200 hover:bg-slate-700"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+                <button
+                  type="submit"
+                  disabled={savingNickname || lichessBusy}
+                  className="flex min-h-[46px] flex-1 items-center justify-center gap-2 rounded-2xl border-3 border-slate-950 bg-gradient-to-b from-amber-300 via-amber-400 to-orange-500 px-5 py-2.5 text-sm font-extrabold text-slate-950 shadow-[0_4px_0_#0f172a] transition hover:brightness-105 active:translate-y-0.5 active:shadow-none disabled:opacity-60"
+                >
+                  {savingNickname
+                    ? t('onlineConnecting')
+                    : editingNickname
+                    ? t('onlineNicknameSave')
+                    : t('onlineCreateMiniAccountBtn')}
+                </button>
+              </div>
+            </form>
+
+            <p className="mt-2.5 text-center text-[11px] font-medium text-slate-400">
+              {t('onlineDeviceSavedHint')}
+            </p>
+
+            {/* Optional Official Lichess OAuth Button */}
+            <div className="my-3.5 flex items-center gap-2.5">
+              <div className="h-px flex-1 bg-slate-700" />
+              <span className="text-[11px] font-bold text-slate-400">
+                {t('onlineOrDivider')}
+              </span>
+              <div className="h-px flex-1 bg-slate-700" />
             </div>
 
-            <div className="mt-4 flex gap-2">
-              {profile && (
-                <button
-                  type="button"
-                  onClick={() => setEditingNickname(false)}
-                  className="flex min-h-[46px] items-center justify-center rounded-2xl border-2 border-slate-700 bg-slate-800 px-4 text-xs font-bold text-slate-200 hover:bg-slate-700"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              )}
-              <button
-                type="submit"
-                disabled={savingNickname}
-                className="flex min-h-[46px] flex-1 items-center justify-center gap-2 rounded-2xl border-3 border-slate-950 bg-gradient-to-b from-emerald-400 to-emerald-600 px-5 py-2.5 text-sm font-extrabold text-slate-950 shadow-[0_4px_0_#0f172a] transition hover:brightness-105 active:translate-y-0.5 active:shadow-none disabled:opacity-60"
-              >
-                {t('onlineNicknameSave')}
-              </button>
-            </div>
-          </form>
+            <button
+              type="button"
+              disabled={lichessBusy || savingNickname}
+              onClick={handleLichessLogin}
+              className="flex min-h-[48px] w-full items-center justify-center gap-2.5 rounded-2xl border-3 border-slate-950 bg-white px-4 py-2 text-sm font-extrabold text-slate-950 shadow-[0_4px_0_#0f172a] transition hover:bg-slate-100 active:translate-y-0.5 active:shadow-none disabled:opacity-60"
+            >
+              <OfficialLichessLogo className="h-6 w-6 shrink-0 text-slate-950" />
+              <span>
+                {lichessBusy ? t('onlineLichessConnecting') : t('onlineLichessBtn')}
+              </span>
+            </button>
+
+            <p className="mt-1.5 text-center text-[11px] font-semibold text-slate-400">
+              {t('onlineLichessSub')}
+            </p>
+
+            {lichessError && (
+              <div className="mt-2.5 rounded-xl border border-rose-500/70 bg-rose-950/80 p-2.5 text-center text-xs font-bold text-rose-200">
+                <p>{lichessError}</p>
+                {lichessFallbackUrl && (
+                  <a
+                    href={lichessFallbackUrl}
+                    target="_top"
+                    className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-extrabold text-slate-950 shadow"
+                  >
+                    <OfficialLichessLogo className="h-4 w-4" />
+                    <span>{t('onlineLichessOpenLink')}</span>
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                )}
+              </div>
+            )}
+          </div>
         ) : (
-          /* Step 3: Live Lobby + Magic Link */
+          /* Live Lobby + Magic Link */
           <div className="flex flex-1 flex-col gap-3">
-            {/* Player Profile Strip (Nickname + UID-persisted Elo + Record) */}
-            <div className="flex items-center justify-between rounded-2xl border-3 border-slate-950 bg-slate-900/90 px-3.5 py-2.5 shadow-lg backdrop-blur-md">
+            {/* Player Profile Strip (Device Mini-Account or Lichess + Elo + Record) */}
+            <div className="flex items-center justify-between gap-2 rounded-2xl border-3 border-slate-950 bg-slate-900/90 px-3.5 py-2.5 shadow-lg backdrop-blur-md">
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
+                  {profile.authType === 'lichess' && (
+                    <span
+                      title={t('onlineLichessBadge', { user: profile.lichessUsername })}
+                      className="inline-flex shrink-0 items-center justify-center rounded-md bg-white p-0.5 text-slate-950 shadow-sm"
+                    >
+                      <OfficialLichessLogo className="h-3.5 w-3.5" />
+                    </span>
+                  )}
                   <span className="truncate text-sm font-extrabold text-white">
                     {profile.nickname}
                   </span>
@@ -588,16 +750,33 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
                     <Edit3 className="h-3.5 w-3.5" />
                   </button>
                 </div>
-                <div className="text-[11px] font-bold text-slate-400 tabular-nums">
-                  {t('onlineRecordLabel', { wins: profile.wins, losses: profile.losses })}
+                <div className="flex items-center gap-2 text-[11px] font-bold text-slate-400 tabular-nums">
+                  <span>{t('onlineRecordLabel', { wins: profile.wins, losses: profile.losses })}</span>
+                  {profile.authType !== 'lichess' && (
+                    <button
+                      type="button"
+                      disabled={lichessBusy}
+                      onClick={handleLichessLogin}
+                      className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] font-extrabold text-white transition hover:border-white"
+                    >
+                      <OfficialLichessLogo className="h-3 w-3" />
+                      <span>{t('onlineLichessLinkBtn')}</span>
+                    </button>
+                  )}
                 </div>
               </div>
 
-              <div className="flex items-center gap-1.5 rounded-xl border-2 border-slate-950 bg-amber-400 px-3 py-1 text-xs font-extrabold text-slate-950 shadow tabular-nums">
+              <div className="flex shrink-0 items-center gap-1.5 rounded-xl border-2 border-slate-950 bg-amber-400 px-3 py-1 text-xs font-extrabold text-slate-950 shadow tabular-nums">
                 <Trophy className="h-3.5 w-3.5" />
                 <span>{t('onlineEloLabel', { elo: profile.elo })}</span>
               </div>
             </div>
+
+            {lichessError && (
+              <div className="rounded-xl border border-rose-500/70 bg-rose-950/85 px-3 py-2 text-center text-xs font-bold text-rose-200">
+                {lichessError}
+              </div>
+            )}
 
             {/* Mode Tabs: Public Lobby | Magic Link */}
             <div className="rounded-3xl border-4 border-slate-950 bg-slate-900/90 p-3.5 shadow-2xl backdrop-blur-md">

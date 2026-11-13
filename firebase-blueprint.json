@@ -25,6 +25,17 @@
         "losses": {
           "type": "number"
         },
+        "authType": {
+          "type": "string",
+          "enum": ["device", "lichess"]
+        },
+        "lichessUsername": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "lichessElo": {
+          "type": "number"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
@@ -34,7 +45,18 @@
           "format": "date-time"
         }
       },
-      "required": ["uid", "nickname", "elo", "wins", "losses", "createdAt", "updatedAt"]
+      "required": [
+        "uid",
+        "nickname",
+        "elo",
+        "wins",
+        "losses",
+        "authType",
+        "lichessUsername",
+        "lichessElo",
+        "createdAt",
+        "updatedAt"
+      ]
     },
     "Challenge": {
       "title": "Challenge",

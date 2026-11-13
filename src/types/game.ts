@@ -150,6 +150,9 @@ export interface PlayerProfile {
   elo: number;
   wins: number;
   losses: number;
+  authType: 'device' | 'lichess';
+  lichessUsername: string;
+  lichessElo: number;
 }
 
 export interface LobbyChallenge {

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>UnoChess · Lichess Auth</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #0f172a;
+        color: #f8fafc;
+        font-family: system-ui, -apple-system, sans-serif;
+        text-align: center;
+        padding: 24px;
+      }
+      .card {
+        max-width: 340px;
+        border: 2px solid #334155;
+        border-radius: 16px;
+        background: #1e293b;
+        padding: 24px;
+      }
+      p {
+        margin: 8px 0 0;
+        color: #cbd5e1;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <strong>UnoChess</strong>
+      <p id="status">Completing Lichess sign-in...</p>
+    </div>
+    <script>
+      (function () {
+        var params = new URLSearchParams(window.location.search);
+        var code = params.get('code') || '';
+        var state = params.get('state') || '';
+        var error = params.get('error') || '';
+        var errorDescription = params.get('error_description') || '';
+
+        var payload = {
+          type: 'LICHESS_OAUTH_CALLBACK',
+          code: code,
+          state: state,
+          error: error,
+          errorDescription: errorDescription,
+          ts: Date.now()
+        };
+
+        try {
+          localStorage.setItem('unochess_lichess_cb', JSON.stringify(payload));
+        } catch (e) {}
+
+        if (window.opener && !window.opener.closed) {
+          try {
+            window.opener.postMessage(payload, window.location.origin);
+          } catch (e) {
+            try {
+              window.opener.postMessage(payload, '*');
+            } catch (e2) {}
+          }
+          setTimeout(function () {
+            window.close();
+          }, 180);
+          return;
+        }
+
+        // Same-tab fallback: redirect back to root with query parameters
+        var next = new URL('/', window.location.origin);
+        if (code) next.searchParams.set('lichess_code', code);
+        if (state) next.searchParams.set('lichess_state', state);
+        if (error) next.searchParams.set('lichess_error', error);
+        window.location.replace(next.toString());
+      })();
+    </script>
+  </body>
+</html>

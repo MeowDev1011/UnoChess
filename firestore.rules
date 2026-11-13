@@ -8,10 +8,6 @@ service cloud.firestore {
     }
 
     // ---------- Reusable Hardened Primitives ----------
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
     function isValidId(id) {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
@@ -30,13 +26,24 @@ service cloud.firestore {
 
     // ---------- Validation Blueprints ----------
     function isValidPlayer(data) {
-      return data.keys().hasAll(['uid', 'nickname', 'elo', 'wins', 'losses', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'nickname', 'elo', 'wins', 'losses', 'createdAt', 'updatedAt'])
+      return data.keys().hasAll([
+          'uid', 'nickname', 'elo', 'wins', 'losses',
+          'authType', 'lichessUsername', 'lichessElo',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'nickname', 'elo', 'wins', 'losses',
+          'authType', 'lichessUsername', 'lichessElo',
+          'createdAt', 'updatedAt'
+        ])
         && isValidId(data.uid)
         && data.nickname is string && data.nickname.size() >= 2 && data.nickname.size() <= 20
         && data.elo is number && data.elo >= 100 && data.elo <= 4000
         && data.wins is number && data.wins >= 0 && data.wins <= 100000
         && data.losses is number && data.losses >= 0 && data.losses <= 100000
+        && data.authType in ['device', 'lichess']
+        && data.lichessUsername is string && data.lichessUsername.size() <= 40
+        && data.lichessElo is number && data.lichessElo >= 0 && data.lichessElo <= 4000
         && isValidTimestamp(data.createdAt)
         && isValidTimestamp(data.updatedAt);
     }
@@ -155,30 +162,28 @@ service cloud.firestore {
 
     // ---------- /players/{uid} ----------
     match /players/{uid} {
-      allow get: if isSignedIn() && isValidId(uid);
+      allow get: if isValidId(uid);
       allow list: if false;
 
-      allow create: if isSignedIn()
-        && isValidId(uid)
-        && uid == request.auth.uid
+      allow create: if isValidId(uid)
         && isValidPlayer(incoming())
-        && incoming().uid == request.auth.uid
-        && incoming().elo == 1200
+        && incoming().uid == uid
         && incoming().wins == 0
         && incoming().losses == 0
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
 
-      allow update: if isSignedIn()
-        && isValidId(uid)
+      allow update: if isValidId(uid)
         && isValidPlayer(incoming())
-        && uid == request.auth.uid
         && incoming().uid == existing().uid
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
           incoming().diff(existing()).affectedKeys().hasOnly(['nickname', 'updatedAt'])
           || incoming().diff(existing()).affectedKeys().hasOnly(['elo', 'wins', 'losses', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly([
+            'nickname', 'elo', 'authType', 'lichessUsername', 'lichessElo', 'updatedAt'
+          ])
         );
 
       allow delete: if false;
@@ -186,27 +191,19 @@ service cloud.firestore {
 
     // ---------- /challenges/{challengeId} ----------
     match /challenges/{challengeId} {
-      allow get: if isSignedIn() && isValidId(challengeId);
-      allow list: if isSignedIn()
-        && (
-          existing().status == 'open'
-          || existing().creatorUid == request.auth.uid
-          || existing().opponentUid == request.auth.uid
-        );
+      allow get: if isValidId(challengeId);
+      allow list: if existing().status == 'open' || existing().status == 'matched';
 
-      allow create: if isSignedIn()
-        && isValidId(challengeId)
+      allow create: if isValidId(challengeId)
         && isValidChallenge(incoming())
         && incoming().id == challengeId
-        && incoming().creatorUid == request.auth.uid
         && incoming().status == 'open'
         && incoming().matchedMatchId == ''
         && incoming().opponentUid == ''
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
 
-      allow update: if isSignedIn()
-        && isValidId(challengeId)
+      allow update: if isValidId(challengeId)
         && isValidChallenge(incoming())
         && existing().status == 'open'
         && incoming().id == existing().id
@@ -216,46 +213,33 @@ service cloud.firestore {
         && (
           // Action: Creator cancels own open challenge
           (
-            existing().creatorUid == request.auth.uid
-            && incoming().status == 'cancelled'
+            incoming().status == 'cancelled'
             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
           )
           ||
           // Action: Another player accepts open challenge and atomically creates match
           (
-            existing().creatorUid != request.auth.uid
-            && incoming().status == 'matched'
-            && incoming().opponentUid == request.auth.uid
+            incoming().status == 'matched'
+            && isValidId(incoming().opponentUid)
+            && incoming().opponentUid != existing().creatorUid
             && isValidId(incoming().matchedMatchId)
             && existsAfter(/databases/$(database)/documents/matches/$(incoming().matchedMatchId))
-            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'opponentUid', 'matchedMatchId', 'updatedAt'])
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'opponentUid', 'matchedMatchId', 'updatedAt'
+            ])
           )
         );
 
-      allow delete: if isSignedIn()
-        && isValidId(challengeId)
-        && existing().creatorUid == request.auth.uid
+      allow delete: if isValidId(challengeId)
         && existing().status == 'open';
     }
 
     // ---------- /matches/{matchId} ----------
     match /matches/{matchId} {
-      allow get: if isSignedIn()
-        && isValidId(matchId)
-        && (
-          existing().status == 'waiting'
-          || existing().hostUid == request.auth.uid
-          || existing().guestUid == request.auth.uid
-        );
+      allow get: if isValidId(matchId);
+      allow list: if false;
 
-      allow list: if isSignedIn()
-        && (
-          existing().hostUid == request.auth.uid
-          || existing().guestUid == request.auth.uid
-        );
-
-      allow create: if isSignedIn()
-        && isValidId(matchId)
+      allow create: if isValidId(matchId)
         && isValidMatch(incoming())
         && incoming().id == matchId
         && incoming().createdAt == request.time
@@ -265,8 +249,7 @@ service cloud.firestore {
           (
             incoming().inviteType == 'magic_link'
             && incoming().status == 'waiting'
-            && incoming().hostUid == request.auth.uid
-            && incoming().p1Uid == request.auth.uid
+            && incoming().p1Uid == incoming().hostUid
             && incoming().guestUid == ''
             && incoming().p2Uid == ''
           )
@@ -275,15 +258,14 @@ service cloud.firestore {
           (
             incoming().inviteType == 'lobby'
             && incoming().status == 'active'
-            && incoming().guestUid == request.auth.uid
-            && incoming().p2Uid == request.auth.uid
-            && incoming().hostUid != request.auth.uid
+            && isValidId(incoming().guestUid)
+            && incoming().p2Uid == incoming().guestUid
+            && incoming().hostUid != incoming().guestUid
             && incoming().p1Uid == incoming().hostUid
           )
         );
 
-      allow update: if isSignedIn()
-        && isValidId(matchId)
+      allow update: if isValidId(matchId)
         && isValidMatch(incoming())
         && existing().status != 'finished'
         && incoming().id == existing().id
@@ -297,10 +279,10 @@ service cloud.firestore {
           (
             existing().status == 'waiting'
             && existing().inviteType == 'magic_link'
-            && request.auth.uid != existing().hostUid
+            && isValidId(incoming().guestUid)
+            && incoming().guestUid != existing().hostUid
             && incoming().status == 'active'
-            && incoming().guestUid == request.auth.uid
-            && incoming().p2Uid == request.auth.uid
+            && incoming().p2Uid == incoming().guestUid
             && isValidTimestamp(incoming().joinedAt)
             && incoming().joinedAt == request.time
             && incoming().diff(existing()).affectedKeys().hasOnly([
@@ -312,15 +294,15 @@ service cloud.firestore {
           // Action: Host cancels waiting magic link
           (
             existing().status == 'waiting'
-            && request.auth.uid == existing().hostUid
             && incoming().status == 'finished'
-            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'winReasonKey', 'updatedAt'])
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'winReasonKey', 'updatedAt'
+            ])
           )
           ||
           // Action: Participant updates live match state or finishes match
           (
             existing().status == 'active'
-            && (request.auth.uid == existing().hostUid || request.auth.uid == existing().guestUid)
             && incoming().guestUid == existing().guestUid
             && incoming().p2Uid == existing().p2Uid
             && incoming().diff(existing()).affectedKeys().hasOnly([

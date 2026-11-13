@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { User } from 'firebase/auth';
 import { Ban, Clock, Layers, Pause, ShieldAlert, Sparkles, Timer, Trophy } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -48,13 +47,17 @@ import { sound } from './utils/audio';
 import {
   applyMatchEloToMyProfile,
   calculateEloDelta,
+  clearDeviceAccountLocally,
   flattenBoard,
+  loadDeviceAccount,
+  loginWithLichessProfile,
   pushMatchUpdate,
-  subscribeAuth,
   subscribeMatch,
   subscribePlayerProfile,
+  syncDeviceAccountWithFirestore,
   unflattenBoard,
 } from './services/onlineService';
+import { exchangeLichessCodeForProfile } from './services/lichessService';
 import { OrientationLock } from './components/OrientationLock';
 import { StartScreen } from './components/StartScreen';
 import { OnlineLobbyView } from './components/OnlineLobbyView';
@@ -84,10 +87,8 @@ export default function App() {
   const [localPlayStyle, setLocalPlayStyle] = useState<LocalPlayStyle>('tabletop');
   const [timeControl, setTimeControl] = useState<TimeControlPreset>(TIME_CONTROL_PRESETS[0]);
 
-  // Online auth, profile, lobby, & live match state
-  const [authUser, setAuthUser] = useState<User | null>(null);
-  const [authReady, setAuthReady] = useState(false);
-  const [myProfile, setMyProfile] = useState<PlayerProfile | null>(null);
+  // Online device mini-account / Lichess profile, lobby, & live match state
+  const [myProfile, setMyProfile] = useState<PlayerProfile | null>(() => loadDeviceAccount());
   const [profileLoading, setProfileLoading] = useState(false);
   const [showOnlineLobby, setShowOnlineLobby] = useState(false);
   const [pendingJoinMatchId, setPendingJoinMatchId] = useState<string | null>(() => {
@@ -178,29 +179,61 @@ export default function App() {
     }
   }, [pendingJoinMatchId]);
 
-  // Subscribe to Auth state
+  // Handle same-tab Lichess OAuth callback fallback if redirected back to root
   useEffect(() => {
-    const unsub = subscribeAuth((user) => {
-      setAuthUser(user);
-      setAuthReady(true);
-      if (!user) {
-        setMyProfile(null);
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('lichess_code');
+    const state = params.get('lichess_state');
+    if (!code || !state) return;
+
+    const cleanUrl = new URL(window.location.href);
+    cleanUrl.searchParams.delete('lichess_code');
+    cleanUrl.searchParams.delete('lichess_state');
+    cleanUrl.searchParams.delete('lichess_error');
+    window.history.replaceState({}, '', cleanUrl.pathname + cleanUrl.search);
+
+    setMode('online');
+    setShowOnlineLobby(true);
+    setProfileLoading(true);
+    void (async () => {
+      try {
+        const li = await exchangeLichessCodeForProfile(code, state);
+        const prof = await loginWithLichessProfile(li);
+        setMyProfile(prof);
+      } catch {
+        // user can retry inside lobby
+      } finally {
         setProfileLoading(false);
       }
-    });
-    return () => unsub();
+    })();
   }, []);
 
-  // Subscribe to authenticated player's UID profile (nickname + Elo)
+  // Sync device mini-account with cloud & listen for live Elo/stats updates
+  const myProfileUid = myProfile?.uid ?? '';
   useEffect(() => {
-    if (!authUser) return;
-    setProfileLoading(true);
-    const unsub = subscribePlayerProfile(authUser.uid, (prof) => {
-      setMyProfile(prof);
-      setProfileLoading(false);
+    if (!myProfileUid) return;
+    let active = true;
+    const current = myProfileRef.current;
+    if (current) {
+      void syncDeviceAccountWithFirestore(current)
+        .then((synced) => {
+          if (active) setMyProfile(synced);
+        })
+        .catch(() => {
+          // keep local device account usable if offline temporarily
+        });
+    }
+    const unsub = subscribePlayerProfile(myProfileUid, (prof) => {
+      if (active && prof) {
+        setMyProfile(prof);
+      }
     });
-    return () => unsub();
-  }, [authUser]);
+    return () => {
+      active = false;
+      unsub();
+    };
+  }, [myProfileUid]);
 
   // Derived factions & labels
   const p2Faction = oppositeFaction(p1Faction);
@@ -208,9 +241,9 @@ export default function App() {
   const enemyFaction: Faction = oppositeFaction(activeFaction);
 
   const myOnlineRole: PlayerId = useMemo(() => {
-    if (!onlineMatch || !authUser) return 'p1';
-    return onlineMatch.p1Uid === authUser.uid ? 'p1' : 'p2';
-  }, [authUser, onlineMatch]);
+    if (!onlineMatch || !myProfileUid) return 'p1';
+    return onlineMatch.p1Uid === myProfileUid ? 'p1' : 'p2';
+  }, [myProfileUid, onlineMatch]);
 
   const playerLabel = useCallback(
     (pid: PlayerId) => {
@@ -350,7 +383,8 @@ export default function App() {
         return;
       }
 
-      const role: PlayerId = authUser && match.p1Uid === authUser.uid ? 'p1' : 'p2';
+      const activeUid = myProfileRef.current?.uid ?? '';
+      const role: PlayerId = activeUid && match.p1Uid === activeUid ? 'p1' : 'p2';
       const myFac: Faction = role === 'p1' ? match.p1Faction : oppositeFaction(match.p1Faction);
 
       const nextBoard = unflattenBoard(match.boardFlat);
@@ -443,12 +477,11 @@ export default function App() {
         setGameOverReason(match.winReasonKey ? t(match.winReasonKey) : '');
         setPhase('GAME_OVER');
 
-        if (authUser && match.winnerUid) {
-          const didWin = match.winnerUid === authUser.uid;
+        const prof = myProfileRef.current;
+        if (prof && match.winnerUid) {
+          const didWin = match.winnerUid === prof.uid;
           setOnlineEloResult({ delta: match.eloDelta, didWin });
-          const prof = myProfileRef.current;
           if (
-            prof &&
             match.eloDelta > 0 &&
             !appliedEloMatchesRef.current.has(match.id)
           ) {
@@ -462,7 +495,7 @@ export default function App() {
     });
 
     return () => unsub();
-  }, [authUser, mode, onlineMatchId, t]);
+  }, [mode, onlineMatchId, t]);
 
   // Helper to push authoritative online updates when playing online
   const pushOnline = useCallback(
@@ -564,14 +597,14 @@ export default function App() {
 
     if (p1TimeMs <= 0 || p2TimeMs <= 0) {
       const winnerPid: PlayerId = p1TimeMs <= 0 ? 'p2' : 'p1';
-      if (mode === 'online' && onlineMatch && authUser) {
+      if (mode === 'online' && onlineMatch && myProfile) {
         if (onlineMatch.status !== 'active') return;
         const winnerUid = playerUidForId(winnerPid);
         const winnerElo = winnerPid === 'p1' ? onlineMatch.hostElo : onlineMatch.guestElo;
         const loserElo = winnerPid === 'p1' ? onlineMatch.guestElo : onlineMatch.hostElo;
         const delta = calculateEloDelta(winnerElo, loserElo);
-        // Let the flagged player (or host) commit timeout cleanly
-        if (authUser.uid === playerUidForId(activePlayer)) {
+        // Let the flagged player commit timeout cleanly
+        if (myProfile.uid === playerUidForId(activePlayer)) {
           pushOnline({
             status: 'finished',
             phase: 'GAME_OVER',
@@ -594,8 +627,8 @@ export default function App() {
     }
   }, [
     activePlayer,
-    authUser,
     mode,
+    myProfile,
     onlineMatch,
     p1TimeMs,
     p2TimeMs,
@@ -2440,12 +2473,12 @@ export default function App() {
   );
 
   const handleOnlineResign = useCallback(() => {
-    if (mode !== 'online' || !onlineMatch || !authUser) return;
+    if (mode !== 'online' || !onlineMatch || !myProfile) return;
     sound.playClick();
     setIsPaused(false);
     const winnerPid: PlayerId = myOnlineRole === 'p1' ? 'p2' : 'p1';
     finishWithWin(winnerPid, 'bannerResignWin', board);
-  }, [authUser, board, finishWithWin, mode, myOnlineRole, onlineMatch]);
+  }, [board, finishWithWin, mode, myOnlineRole, myProfile, onlineMatch]);
 
   // ---------- BOT AI TURN LOOP ----------
   const botTimerRef = useRef<number | null>(null);
@@ -2840,8 +2873,6 @@ export default function App() {
       <div className="mx-auto flex min-h-[100dvh] w-full max-w-[490px] flex-col">
         {showOnlineLobby ? (
           <OnlineLobbyView
-            authUser={authUser}
-            authReady={authReady}
             profile={myProfile}
             profileLoading={profileLoading}
             pendingJoinMatchId={pendingJoinMatchId}
@@ -2854,6 +2885,10 @@ export default function App() {
               }
             }}
             onProfileSaved={(prof) => setMyProfile(prof)}
+            onSwitchAccount={() => {
+              clearDeviceAccountLocally();
+              setMyProfile(null);
+            }}
             onEnterMatch={handleEnterOnlineMatch}
             onBack={() => {
               setShowOnlineLobby(false);

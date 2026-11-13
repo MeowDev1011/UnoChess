@@ -1,13 +1,5 @@
 import { initializeApp } from 'firebase/app';
 import {
-  GoogleAuthProvider,
-  User,
-  getAuth,
-  onAuthStateChanged,
-  signInWithPopup,
-  signOut,
-} from 'firebase/auth';
-import {
   collection,
   doc,
   getDoc,
@@ -36,10 +28,12 @@ import {
   PreferredColor,
   TimeControlPreset,
 } from '../types/game';
+import { LichessProfileResult } from './lichessService';
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const auth = getAuth(app);
+
+const DEVICE_ACCOUNT_KEY = 'unochess_device_account_v1';
 
 // Boot-time connection check
 async function testConnection() {
@@ -68,15 +62,45 @@ interface FirestoreErrorInfo {
   path: string | null;
   authInfo: {
     userId?: string | null;
-    email?: string | null;
-    emailVerified?: boolean | null;
-    isAnonymous?: boolean | null;
-    tenantId?: string | null;
-    providerInfo?: {
-      providerId?: string | null;
-      email?: string | null;
-    }[];
+    authType?: string | null;
   };
+}
+
+export function loadDeviceAccount(): PlayerProfile | null {
+  try {
+    const raw = localStorage.getItem(DEVICE_ACCOUNT_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw) as Partial<PlayerProfile>;
+    if (!d.uid || !d.nickname) return null;
+    return {
+      uid: String(d.uid),
+      nickname: String(d.nickname).slice(0, 20),
+      elo: Number(d.elo ?? 1200),
+      wins: Number(d.wins ?? 0),
+      losses: Number(d.losses ?? 0),
+      authType: d.authType === 'lichess' ? 'lichess' : 'device',
+      lichessUsername: String(d.lichessUsername ?? ''),
+      lichessElo: Number(d.lichessElo ?? 0),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function saveDeviceAccountLocally(profile: PlayerProfile): void {
+  try {
+    localStorage.setItem(DEVICE_ACCOUNT_KEY, JSON.stringify(profile));
+  } catch {
+    // ignore storage quota failures
+  }
+}
+
+export function clearDeviceAccountLocally(): void {
+  try {
+    localStorage.removeItem(DEVICE_ACCOUNT_KEY);
+  } catch {
+    // ignore storage failures
+  }
 }
 
 export function handleFirestoreError(
@@ -84,19 +108,12 @@ export function handleFirestoreError(
   operationType: OperationType,
   path: string | null
 ): never {
+  const localAcc = loadDeviceAccount();
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo:
-        auth.currentUser?.providerData?.map((provider) => ({
-          providerId: provider.providerId,
-          email: provider.email,
-        })) || [],
+      userId: localAcc?.uid ?? null,
+      authType: localAcc?.authType ?? null,
     },
     operationType,
     path,
@@ -144,36 +161,47 @@ export function calculateEloDelta(winnerElo: number, loserElo: number): number {
   return Math.max(1, Math.min(100, delta));
 }
 
-export async function signInWithAccount(): Promise<User> {
-  const provider = new GoogleAuthProvider();
-  provider.setCustomParameters({ prompt: 'select_account' });
-  const cred = await signInWithPopup(auth, provider);
-  return cred.user;
+function mapDocToProfile(d: Record<string, unknown>): PlayerProfile {
+  return {
+    uid: String(d.uid),
+    nickname: String(d.nickname).slice(0, 20),
+    elo: Number(d.elo ?? 1200),
+    wins: Number(d.wins ?? 0),
+    losses: Number(d.losses ?? 0),
+    authType: d.authType === 'lichess' ? 'lichess' : 'device',
+    lichessUsername: String(d.lichessUsername ?? ''),
+    lichessElo: Number(d.lichessElo ?? 0),
+  };
 }
 
-export async function signOutAccount(): Promise<void> {
-  await signOut(auth);
-}
-
-export function subscribeAuth(cb: (user: User | null) => void): () => void {
-  return onAuthStateChanged(auth, cb);
-}
-
-export async function getPlayerProfile(uid: string): Promise<PlayerProfile | null> {
-  const path = `players/${uid}`;
+export async function syncDeviceAccountWithFirestore(
+  localProfile: PlayerProfile
+): Promise<PlayerProfile> {
+  const path = `players/${localProfile.uid}`;
+  const ref = doc(db, 'players', localProfile.uid);
   try {
-    const snap = await getDoc(doc(db, 'players', uid));
-    if (!snap.exists()) return null;
-    const d = snap.data();
-    return {
-      uid: String(d.uid),
-      nickname: String(d.nickname),
-      elo: Number(d.elo),
-      wins: Number(d.wins),
-      losses: Number(d.losses),
-    };
+    const snap = await getDoc(ref);
+    if (snap.exists()) {
+      const remote = mapDocToProfile(snap.data() as Record<string, unknown>);
+      saveDeviceAccountLocally(remote);
+      return remote;
+    }
+    await setDoc(ref, {
+      uid: localProfile.uid,
+      nickname: localProfile.nickname.slice(0, 20),
+      elo: Math.max(100, Math.min(4000, Math.round(localProfile.elo))),
+      wins: 0,
+      losses: 0,
+      authType: localProfile.authType,
+      lichessUsername: localProfile.lichessUsername.slice(0, 40),
+      lichessElo: Math.max(0, Math.min(4000, Math.round(localProfile.lichessElo))),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    saveDeviceAccountLocally(localProfile);
+    return localProfile;
   } catch (error) {
-    handleFirestoreError(error, OperationType.GET, path);
+    handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
 
@@ -189,52 +217,116 @@ export function subscribePlayerProfile(
         cb(null);
         return;
       }
-      const d = snap.data();
-      cb({
-        uid: String(d.uid),
-        nickname: String(d.nickname),
-        elo: Number(d.elo),
-        wins: Number(d.wins),
-        losses: Number(d.losses),
-      });
+      const prof = mapDocToProfile(snap.data() as Record<string, unknown>);
+      saveDeviceAccountLocally(prof);
+      cb(prof);
     },
     (error) => handleFirestoreError(error, OperationType.GET, path)
   );
 }
 
-export async function savePlayerNickname(uid: string, rawNickname: string): Promise<PlayerProfile> {
+export async function saveDevicePlayerAccount(
+  rawNickname: string,
+  existingProfile?: PlayerProfile | null
+): Promise<PlayerProfile> {
   const nickname = rawNickname.trim().slice(0, 20);
   if (nickname.length < 2) {
     throw new Error('Nickname too short');
   }
+  const uid = existingProfile?.uid || generateSafeId('dev');
   const path = `players/${uid}`;
   const ref = doc(db, 'players', uid);
+
   try {
     const existing = await getDoc(ref);
     if (!existing.exists()) {
-      await setDoc(ref, {
+      const created: PlayerProfile = {
         uid,
         nickname,
         elo: 1200,
         wins: 0,
         losses: 0,
+        authType: 'device',
+        lichessUsername: '',
+        lichessElo: 0,
+      };
+      await setDoc(ref, {
+        ...created,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-      return { uid, nickname, elo: 1200, wins: 0, losses: 0 };
+      saveDeviceAccountLocally(created);
+      return created;
     } else {
       await updateDoc(ref, {
         nickname,
         updatedAt: serverTimestamp(),
       });
-      const d = existing.data();
-      return {
-        uid,
+      const updated = {
+        ...mapDocToProfile(existing.data() as Record<string, unknown>),
         nickname,
-        elo: Number(d.elo ?? 1200),
-        wins: Number(d.wins ?? 0),
-        losses: Number(d.losses ?? 0),
       };
+      saveDeviceAccountLocally(updated);
+      return updated;
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+export async function loginWithLichessProfile(
+  lichess: LichessProfileResult
+): Promise<PlayerProfile> {
+  const safeId = lichess.lichessId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48) || 'user';
+  const uid = `lichess_${safeId}`;
+  const path = `players/${uid}`;
+  const ref = doc(db, 'players', uid);
+  const nickname = lichess.username.trim().slice(0, 20);
+  const clampedElo = Math.max(100, Math.min(4000, Math.round(lichess.elo || 1200)));
+
+  try {
+    const existing = await getDoc(ref);
+    if (!existing.exists()) {
+      const profile: PlayerProfile = {
+        uid,
+        nickname: nickname.length >= 2 ? nickname : `Li_${safeId}`.slice(0, 20),
+        elo: clampedElo,
+        wins: 0,
+        losses: 0,
+        authType: 'lichess',
+        lichessUsername: lichess.username.slice(0, 40),
+        lichessElo: clampedElo,
+      };
+      await setDoc(ref, {
+        ...profile,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      saveDeviceAccountLocally(profile);
+      return profile;
+    } else {
+      const current = mapDocToProfile(existing.data() as Record<string, unknown>);
+      const nextNickname = nickname.length >= 2 ? nickname : current.nickname;
+      // Preserve UnoChess earned Elo if player already has rated UnoChess games; otherwise sync Lichess Elo
+      const nextElo = current.wins + current.losses === 0 ? clampedElo : current.elo;
+      await updateDoc(ref, {
+        nickname: nextNickname,
+        elo: nextElo,
+        authType: 'lichess',
+        lichessUsername: lichess.username.slice(0, 40),
+        lichessElo: clampedElo,
+        updatedAt: serverTimestamp(),
+      });
+      const updated: PlayerProfile = {
+        ...current,
+        nickname: nextNickname,
+        elo: nextElo,
+        authType: 'lichess',
+        lichessUsername: lichess.username.slice(0, 40),
+        lichessElo: clampedElo,
+      };
+      saveDeviceAccountLocally(updated);
+      return updated;
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
@@ -247,13 +339,21 @@ export async function applyMatchEloToMyProfile(
   eloDelta: number
 ): Promise<void> {
   const path = `players/${profile.uid}`;
-  const newElo = Math.max(100, Math.min(4000, profile.elo + (won ? eloDelta : -eloDelta)));
+  const newElo = Math.max(100, Math.min(4000, Math.round(profile.elo + (won ? eloDelta : -eloDelta))));
+  const newWins = profile.wins + (won ? 1 : 0);
+  const newLosses = profile.losses + (won ? 0 : 1);
   try {
     await updateDoc(doc(db, 'players', profile.uid), {
-      elo: Math.round(newElo),
-      wins: profile.wins + (won ? 1 : 0),
-      losses: profile.losses + (won ? 0 : 1),
+      elo: newElo,
+      wins: newWins,
+      losses: newLosses,
       updatedAt: serverTimestamp(),
+    });
+    saveDeviceAccountLocally({
+      ...profile,
+      elo: newElo,
+      wins: newWins,
+      losses: newLosses,
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
