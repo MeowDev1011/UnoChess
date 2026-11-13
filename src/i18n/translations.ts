@@ -226,6 +226,37 @@ export interface TranslationDict {
   guideRule2Title: string;
   guideRule2Desc: string;
   sourceCode: string;
+  watchMatch: string;
+  replayTitle: string;
+  replayStart: string;
+  replayPlay: string;
+  replayPause: string;
+  replayFlip: string;
+  replayAnalysisTurn: string;
+  replayVariationHint: string;
+  replayMainLine: string;
+  replayVariationBadge: string;
+  replayDeleteVariation: string;
+  replaySignsLabel: string;
+  replayCommentPlaceholder: string;
+  replaySaveComment: string;
+  replayExportPgn: string;
+  replayCopyPgn: string;
+  replayCopiedPgn: string;
+  replayDownloadMp4: string;
+  replayExportingMp4: string;
+  replayMp4Error: string;
+  replayMovesEmpty: string;
+  profileHistoryBtn: string;
+  profileHistoryTitle: string;
+  profileHistoryEmpty: string;
+  profileFilterAll: string;
+  profileFilterBot: string;
+  profileFilterLocal: string;
+  profileFilterOnline: string;
+  outcomeWin: string;
+  outcomeLoss: string;
+  outcomeDraw: string;
 }
 
 const es: TranslationDict = {
@@ -454,6 +485,37 @@ const es: TranslationDict = {
   guideRule2Title: 'Regla 2: Duelo de Color (Coincidencia en Mesa)',
   guideRule2Desc: 'Si robas una carta del mismo color base que la última carta jugada por tu oponente (los comodines negros rompen la cadena), se dispara un Duelo de Color antes de mover: 1) El rival recibe una pieza mediana tuya (Caballo o Alfil; si no tienes, Torre) en sus dos primeras filas. 2) Además pierdes una pieza menor (Peón activo; si no tienes, otro Caballo o Alfil) que pasa a capturados. Tras el intercambio, juegas tu turno normalmente.',
   sourceCode: 'Código Fuente',
+  watchMatch: 'Ver Partida',
+  replayTitle: 'Análisis y Repetición',
+  replayStart: 'Inicio',
+  replayPlay: 'Reproducir',
+  replayPause: 'Pausar',
+  replayFlip: 'Voltear',
+  replayAnalysisTurn: 'Análisis · Mueven {{side}}',
+  replayVariationHint: 'Mueve piezas en el tablero para probar variantes o selecciona cualquier jugada',
+  replayMainLine: 'Línea principal',
+  replayVariationBadge: 'Variante',
+  replayDeleteVariation: 'Eliminar variante',
+  replaySignsLabel: 'Signos de jugada',
+  replayCommentPlaceholder: 'Escribe un comentario para esta jugada...',
+  replaySaveComment: 'Guardar',
+  replayExportPgn: 'Exportar PGN',
+  replayCopyPgn: 'Copiar PGN',
+  replayCopiedPgn: '¡PGN copiado!',
+  replayDownloadMp4: 'Descargar Video MP4',
+  replayExportingMp4: 'Generando MP4 ({{pct}}%)...',
+  replayMp4Error: 'No se pudo exportar el video MP4 en este navegador.',
+  replayMovesEmpty: 'Esta partida terminó sin jugadas registradas.',
+  profileHistoryBtn: 'Historial de Partidas',
+  profileHistoryTitle: 'Perfil e Historial de Partidas',
+  profileHistoryEmpty: 'Aún no tienes partidas guardadas. ¡Juega una partida y aparecerá aquí!',
+  profileFilterAll: 'Todas',
+  profileFilterBot: 'Vs. Máquina',
+  profileFilterLocal: '2 Jugadores',
+  profileFilterOnline: 'En Línea',
+  outcomeWin: 'Victoria',
+  outcomeLoss: 'Derrota',
+  outcomeDraw: 'Tablas',
 };
 
 const en: TranslationDict = {
@@ -682,6 +744,37 @@ const en: TranslationDict = {
   guideRule2Title: 'Rule 2: Color Duel (Table Match)',
   guideRule2Desc: 'If you draw a card with the same base color as the opponent’s previous card (black wilds break the chain), a Color Duel triggers before your moves: 1) Your opponent receives one of your medium pieces (Knight/Bishop, else Rook) placed in their home rows. 2) You also lose a minor piece (Pawn, else another Knight/Bishop) to captured pieces. Afterwards, your turn proceeds normally.',
   sourceCode: 'Source Code',
+  watchMatch: 'Watch Game',
+  replayTitle: 'Replay & Analysis',
+  replayStart: 'Start',
+  replayPlay: 'Play',
+  replayPause: 'Pause',
+  replayFlip: 'Flip',
+  replayAnalysisTurn: 'Analysis · {{side}} to move',
+  replayVariationHint: 'Move pieces on the board to add variations or tap any move below',
+  replayMainLine: 'Main Line',
+  replayVariationBadge: 'Variation',
+  replayDeleteVariation: 'Delete variation',
+  replaySignsLabel: 'Move annotations',
+  replayCommentPlaceholder: 'Add a comment to this move...',
+  replaySaveComment: 'Save',
+  replayExportPgn: 'Export PGN',
+  replayCopyPgn: 'Copy PGN',
+  replayCopiedPgn: 'PGN copied!',
+  replayDownloadMp4: 'Download MP4 Video',
+  replayExportingMp4: 'Rendering MP4 ({{pct}}%)...',
+  replayMp4Error: 'Could not export MP4 video in this browser.',
+  replayMovesEmpty: 'This match ended with no recorded moves.',
+  profileHistoryBtn: 'Match History',
+  profileHistoryTitle: 'Profile & Match History',
+  profileHistoryEmpty: 'No saved matches yet. Finish a game to see it listed here!',
+  profileFilterAll: 'All',
+  profileFilterBot: 'Vs. Bot',
+  profileFilterLocal: '2 Players',
+  profileFilterOnline: 'Online',
+  outcomeWin: 'Win',
+  outcomeLoss: 'Loss',
+  outcomeDraw: 'Draw',
 };
 
 // Helper to create localized overrides concisely while preserving 100% key coverage
@@ -695,6 +788,11 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   fr: {
     translation: makeDict({
       sourceCode: 'Code Source',
+      watchMatch: 'Voir la Partie',
+      profileHistoryBtn: 'Historique',
+      profileHistoryTitle: 'Profil & Historique',
+      replayDownloadMp4: 'Télécharger MP4',
+      replayExportPgn: 'Exporter PGN',
       tagline: 'Échecs tactiques propulsés par des cartes d’action',
       modeTitle: 'Mode de jeu',
       modeBot: 'Vs. Ordinateur',
@@ -841,6 +939,11 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   de: {
     translation: makeDict({
       sourceCode: 'Quellcode',
+      watchMatch: 'Partie Ansehen',
+      profileHistoryBtn: 'Spielverlauf',
+      profileHistoryTitle: 'Profil & Spielverlauf',
+      replayDownloadMp4: 'MP4 Herunterladen',
+      replayExportPgn: 'PGN Exportieren',
       tagline: 'Taktisches Schach mit Aktionskarten',
       modeTitle: 'Spielmodus',
       modeBot: 'Gegen KI',
@@ -900,6 +1003,11 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   it: {
     translation: makeDict({
       sourceCode: 'Codice Sorgente',
+      watchMatch: 'Guarda Partita',
+      profileHistoryBtn: 'Cronologia Partite',
+      profileHistoryTitle: 'Profilo e Cronologia',
+      replayDownloadMp4: 'Scarica Video MP4',
+      replayExportPgn: 'Esporta PGN',
       tagline: 'Scacchi tattici guidati da carte azione',
       modeTitle: 'Modalità di Gioco',
       modeBot: 'Vs. Computer',
@@ -1041,6 +1149,11 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   ru: {
     translation: makeDict({
       sourceCode: 'Исходный код',
+      watchMatch: 'Смотреть партию',
+      profileHistoryBtn: 'История партий',
+      profileHistoryTitle: 'Профиль и история',
+      replayDownloadMp4: 'Скачать MP4',
+      replayExportPgn: 'Экспорт PGN',
       tagline: 'Тактические шахматы с картами действий',
       modeTitle: 'Режим игры',
       modeBot: 'Против ИИ',

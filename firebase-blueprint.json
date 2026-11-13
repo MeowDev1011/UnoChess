@@ -387,12 +387,117 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "MatchHistoryRecord": {
+      "title": "MatchHistoryRecord",
+      "description": "Completed match record with compact move snapshots, annotations, and variations stored under a player profile.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ownerUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["bot", "local", "online"]
+        },
+        "whiteName": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "blackName": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "whiteElo": {
+          "type": "number"
+        },
+        "blackElo": {
+          "type": "number"
+        },
+        "playerFaction": {
+          "type": "string",
+          "enum": ["white", "black"]
+        },
+        "result": {
+          "type": "string",
+          "enum": ["1-0", "0-1", "1/2-1/2", "*"]
+        },
+        "outcome": {
+          "type": "string",
+          "enum": ["win", "loss", "draw"]
+        },
+        "reasonText": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "timeControlLabel": {
+          "type": "string",
+          "maxLength": 24
+        },
+        "turnsPlayed": {
+          "type": "number"
+        },
+        "elapsedSeconds": {
+          "type": "number"
+        },
+        "eloDelta": {
+          "type": "number"
+        },
+        "createdAtMs": {
+          "type": "number"
+        },
+        "moves": {
+          "type": "array"
+        },
+        "replayTree": {
+          "type": "object"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerUid",
+        "mode",
+        "whiteName",
+        "blackName",
+        "playerFaction",
+        "result",
+        "outcome",
+        "reasonText",
+        "timeControlLabel",
+        "turnsPlayed",
+        "elapsedSeconds",
+        "createdAtMs",
+        "moves",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
     "/players/{uid}": {
       "schema": { "$ref": "#/entities/PlayerProfile" },
       "description": "Public player identity (UID + nickname + Elo + W/L record)."
+    },
+    "/players/{uid}/matches/{recordId}": {
+      "schema": { "$ref": "#/entities/MatchHistoryRecord" },
+      "description": "Completed match history records for replay, annotation, and export."
     },
     "/challenges/{challengeId}": {
       "schema": { "$ref": "#/entities/Challenge" },

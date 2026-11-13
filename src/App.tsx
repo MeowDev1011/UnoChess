@@ -20,6 +20,8 @@ import {
   PieceType,
   PlayerId,
   PlayerProfile,
+  ReplayNode,
+  SavedMatchRecord,
   TIME_CONTROL_PRESETS,
   TimeControlPreset,
   WILD_COLOR_PIECE_MAP,
@@ -44,6 +46,7 @@ import {
 } from './engine/chess';
 import { createDeck, shuffleCards } from './engine/deck';
 import { buildPGN, coordToAlgebraic, downloadPGNFile, formatMoveToSAN } from './engine/pgn';
+import { coordToSq, serializeBoardCompact } from './engine/replay';
 import { sound } from './utils/audio';
 import {
   applyMatchEloToMyProfile,
@@ -58,6 +61,12 @@ import {
   syncDeviceAccountWithFirestore,
   unflattenBoard,
 } from './services/onlineService';
+import {
+  loadLocalMatchHistory,
+  loadMergedMatchHistory,
+  saveMatchRecord,
+  updateSavedMatchReplayTree,
+} from './services/matchHistoryService';
 import { exchangeLichessCodeForProfile } from './services/lichessService';
 import { OrientationLock } from './components/OrientationLock';
 import { StartScreen } from './components/StartScreen';
@@ -68,6 +77,8 @@ import { ChessPieceGraphic } from './components/ChessPieceGraphic';
 import { MoveHistoryBar } from './components/MoveHistoryBar';
 import { PauseModal } from './components/PauseModal';
 import { CardGuideModal } from './components/CardGuideModal';
+import { GameReplayModal } from './components/GameReplayModal';
+import { ProfileHistoryModal } from './components/ProfileHistoryModal';
 import {
   GameOverModal,
   PromotionModal,
@@ -158,15 +169,27 @@ export default function App() {
   const [moveHistory, setMoveHistory] = useState<MoveHistoryEntry[]>([]);
   const [duelToastMsg, setDuelToastMsg] = useState<string | null>(null);
 
-  // Status, Timer, Clocks, Winner
+  // Status, Timer, Clocks, Winner, Replay & Profile History
   const [bannerMsg, setBannerMsg] = useState<string>(() => t('bannerDrawStart'));
   const [turnsPlayed, setTurnsPlayed] = useState(1);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const elapsedSecondsRef = useRef(0);
+  elapsedSecondsRef.current = elapsedSeconds;
   const [p1TimeMs, setP1TimeMs] = useState(0);
   const [p2TimeMs, setP2TimeMs] = useState(0);
   const [winnerName, setWinnerName] = useState<string | null>(null);
   const [gameOverReason, setGameOverReason] = useState('');
   const [finalResultToken, setFinalResultToken] = useState<'1-0' | '0-1' | '1/2-1/2' | '*'>('*');
+
+  const currentLocalMatchIdRef = useRef<string>(`local_${Date.now()}`);
+  const savedMatchIdsRef = useRef<Set<string>>(new Set());
+  const [lastCompletedRecord, setLastCompletedRecord] = useState<SavedMatchRecord | null>(null);
+  const [savedMatchHistory, setSavedMatchHistory] = useState<SavedMatchRecord[]>(() =>
+    loadLocalMatchHistory()
+  );
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [isProfileHistoryOpen, setIsProfileHistoryOpen] = useState(false);
+  const [replayRecord, setReplayRecord] = useState<SavedMatchRecord | null>(null);
 
   // Audio UI state synced from Web Audio engine
   const [audioState, setAudioState] = useState(() => sound.getState());
@@ -235,6 +258,55 @@ export default function App() {
       unsub();
     };
   }, [myProfileUid, showOnlineLobby]);
+
+  const refreshMatchHistory = useCallback(async (uidOverride?: string | null) => {
+    const uid = uidOverride !== undefined ? uidOverride : myProfileRef.current?.uid ?? null;
+    setHistoryLoading(true);
+    try {
+      const merged = await loadMergedMatchHistory(uid);
+      setSavedMatchHistory(merged);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshMatchHistory(myProfileUid || null);
+  }, [myProfileUid, refreshMatchHistory]);
+
+  const persistCompletedMatch = useCallback(
+    (params: {
+      id: string;
+      mode: GameMode;
+      whiteName: string;
+      blackName: string;
+      whiteElo: number | null;
+      blackElo: number | null;
+      playerFaction: Faction;
+      result: '1-0' | '0-1' | '1/2-1/2' | '*';
+      outcome: 'win' | 'loss' | 'draw';
+      reasonText: string;
+      timeControlLabel: string;
+      turnsPlayed: number;
+      elapsedSeconds: number;
+      eloDelta: number | null;
+      moves: MoveHistoryEntry[];
+    }) => {
+      const rec: SavedMatchRecord = {
+        ...params,
+        ownerUid: myProfileRef.current?.uid || 'local',
+        createdAtMs: Date.now(),
+      };
+      setLastCompletedRecord(rec);
+      if (savedMatchIdsRef.current.has(rec.id)) return rec;
+      savedMatchIdsRef.current.add(rec.id);
+      void saveMatchRecord(rec).then((nextList) => {
+        setSavedMatchHistory(nextList);
+      });
+      return rec;
+    },
+    []
+  );
 
   // Derived factions & labels
   const p2Faction = oppositeFaction(p1Faction);
@@ -467,15 +539,14 @@ export default function App() {
             : match.guestNickname
           : null;
         setWinnerName(wName);
-        if (match.winnerUid) {
-          const winnerFac = winnerIsP1
-            ? match.p1Faction
-            : oppositeFaction(match.p1Faction);
-          setFinalResultToken(winnerFac === 'white' ? '1-0' : '0-1');
-        } else {
-          setFinalResultToken('*');
-        }
-        setGameOverReason(match.winReasonKey ? t(match.winReasonKey) : '');
+        const resTok: '1-0' | '0-1' | '*' = match.winnerUid
+          ? (winnerIsP1 ? match.p1Faction : oppositeFaction(match.p1Faction)) === 'white'
+            ? '1-0'
+            : '0-1'
+          : '*';
+        setFinalResultToken(resTok);
+        const reasonStr = match.winReasonKey ? t(match.winReasonKey) : '';
+        setGameOverReason(reasonStr);
         setPhase('GAME_OVER');
 
         const prof = myProfileRef.current;
@@ -491,13 +562,44 @@ export default function App() {
             void applyMatchEloToMyProfile(prof, didWin, match.eloDelta, matchCategory);
           }
         }
+
+        const whiteNameOnline =
+          match.p1Faction === 'white' ? match.hostNickname : match.guestNickname;
+        const blackNameOnline =
+          match.p1Faction === 'black' ? match.hostNickname : match.guestNickname;
+        const whiteEloOnline =
+          match.p1Faction === 'white' ? match.hostElo : match.guestElo;
+        const blackEloOnline =
+          match.p1Faction === 'black' ? match.hostElo : match.guestElo;
+        const outcomeOnline: 'win' | 'loss' | 'draw' = !match.winnerUid
+          ? 'draw'
+          : match.winnerUid === activeUid
+          ? 'win'
+          : 'loss';
+        persistCompletedMatch({
+          id: match.id,
+          mode: 'online',
+          whiteName: whiteNameOnline,
+          blackName: blackNameOnline,
+          whiteElo: whiteEloOnline,
+          blackElo: blackEloOnline,
+          playerFaction: myFac,
+          result: resTok,
+          outcome: outcomeOnline,
+          reasonText: reasonStr,
+          timeControlLabel: match.timeControlLabel || '∞',
+          turnsPlayed: match.turnsPlayed || 1,
+          elapsedSeconds: elapsedSecondsRef.current,
+          eloDelta: match.eloDelta ?? null,
+          moves: match.moveHistory ?? [],
+        });
       } else {
         setPhase(match.phase);
       }
     });
 
     return () => unsub();
-  }, [mode, onlineMatchId, t]);
+  }, [mode, onlineMatchId, persistCompletedMatch, t]);
 
   // Helper to push authoritative online updates when playing online
   const pushOnline = useCallback(
@@ -521,6 +623,7 @@ export default function App() {
     setShowOnlineLobby(false);
     setOnlineMatchId(matchId);
     setOnlineEloResult(null);
+    setLastCompletedRecord(null);
     setMoveHistory([]);
     setLastChainColor('');
     setLastChainBy('');
@@ -646,25 +749,52 @@ export default function App() {
 
       sound.playCheckmate();
       const winnerFac = winnerPid === 'p1' ? p1Faction : oppositeFaction(p1Faction);
-      setFinalResultToken(winnerFac === 'white' ? '1-0' : '0-1');
+      const resTok: '1-0' | '0-1' = winnerFac === 'white' ? '1-0' : '0-1';
+      setFinalResultToken(resTok);
       setWinnerName(playerLabel(winnerPid));
       setGameOverReason(t('bannerTimeoutWin'));
       setPhase('GAME_OVER');
+
+      const whitePid: PlayerId = p1Faction === 'white' ? 'p1' : 'p2';
+      const blackPid: PlayerId = p1Faction === 'black' ? 'p1' : 'p2';
+      persistCompletedMatch({
+        id: currentLocalMatchIdRef.current || `local_${Date.now()}`,
+        mode,
+        whiteName: playerLabel(whitePid),
+        blackName: playerLabel(blackPid),
+        whiteElo: null,
+        blackElo: null,
+        playerFaction: p1Faction,
+        result: resTok,
+        outcome: winnerPid === 'p1' ? 'win' : 'loss',
+        reasonText: t('bannerTimeoutWin'),
+        timeControlLabel: timeControl.label,
+        turnsPlayed,
+        elapsedSeconds,
+        eloDelta: null,
+        moves: moveHistory,
+      });
     }
   }, [
     activePlayer,
+    elapsedSeconds,
     mode,
+    moveHistory,
     myProfile,
     onlineMatch,
+    p1Faction,
     p1TimeMs,
     p2TimeMs,
+    persistCompletedMatch,
     phase,
     playerLabel,
     playerUidForId,
     pushOnline,
     showOnlineLobby,
     t,
+    timeControl.label,
     timeControl.minutes,
+    turnsPlayed,
   ]);
 
   const formatTime = (secs: number) => {
@@ -733,6 +863,8 @@ export default function App() {
     setGameOverReason('');
     setFinalResultToken('*');
     setOnlineEloResult(null);
+    setLastCompletedRecord(null);
+    currentLocalMatchIdRef.current = `local_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     setLastChainColor('');
     setLastChainBy('');
     setIsFirstMoveOfTurn(true);
@@ -778,11 +910,46 @@ export default function App() {
         return;
       }
 
+      const movesToSave = extraPatch?.moveHistory ?? moveHistory;
       setWinnerName(playerLabel(winnerPid));
       setGameOverReason(t(reasonKey));
       setPhase('GAME_OVER');
+
+      const whitePid: PlayerId = p1Faction === 'white' ? 'p1' : 'p2';
+      const blackPid: PlayerId = p1Faction === 'black' ? 'p1' : 'p2';
+      persistCompletedMatch({
+        id: currentLocalMatchIdRef.current || `local_${Date.now()}`,
+        mode,
+        whiteName: playerLabel(whitePid),
+        blackName: playerLabel(blackPid),
+        whiteElo: null,
+        blackElo: null,
+        playerFaction: p1Faction,
+        result: resTok,
+        outcome: winnerPid === 'p1' ? 'win' : 'loss',
+        reasonText: t(reasonKey),
+        timeControlLabel: timeControl.label,
+        turnsPlayed,
+        elapsedSeconds: elapsedSecondsRef.current,
+        eloDelta: null,
+        moves: movesToSave,
+      });
     },
-    [mode, onlineMatch, p1Faction, p1TimeMs, p2TimeMs, playerLabel, playerUidForId, pushOnline, t]
+    [
+      mode,
+      moveHistory,
+      onlineMatch,
+      p1Faction,
+      p1TimeMs,
+      p2TimeMs,
+      persistCompletedMatch,
+      playerLabel,
+      playerUidForId,
+      pushOnline,
+      t,
+      timeControl.label,
+      turnsPlayed,
+    ]
   );
 
   const handleDownloadPgn = useCallback(() => {
@@ -798,6 +965,67 @@ export default function App() {
     });
     downloadPGNFile(pgn);
   }, [finalResultToken, moveHistory, p1Faction, playerLabel, timeControl.label]);
+
+  const handleWatchCurrentGame = useCallback(() => {
+    sound.playClick();
+    if (lastCompletedRecord) {
+      const fromList = savedMatchHistory.find((m) => m.id === lastCompletedRecord.id);
+      setReplayRecord(fromList ?? lastCompletedRecord);
+      return;
+    }
+    const whitePid: PlayerId = p1Faction === 'white' ? 'p1' : 'p2';
+    const blackPid: PlayerId = p1Faction === 'black' ? 'p1' : 'p2';
+    setReplayRecord({
+      id: onlineMatch?.id || currentLocalMatchIdRef.current || `replay_${Date.now()}`,
+      ownerUid: myProfileRef.current?.uid || 'local',
+      mode,
+      whiteName: playerLabel(whitePid),
+      blackName: playerLabel(blackPid),
+      whiteElo: playerEloForId(whitePid),
+      blackElo: playerEloForId(blackPid),
+      playerFaction:
+        mode === 'online' && myOnlineRole === 'p2' ? oppositeFaction(p1Faction) : p1Faction,
+      result: finalResultToken,
+      outcome: 'draw',
+      reasonText: gameOverReason,
+      timeControlLabel: timeControl.label,
+      turnsPlayed,
+      elapsedSeconds,
+      eloDelta: onlineEloResult?.delta ?? null,
+      createdAtMs: Date.now(),
+      moves: moveHistory,
+    });
+  }, [
+    elapsedSeconds,
+    finalResultToken,
+    gameOverReason,
+    lastCompletedRecord,
+    mode,
+    moveHistory,
+    myOnlineRole,
+    onlineEloResult,
+    onlineMatch,
+    p1Faction,
+    playerEloForId,
+    playerLabel,
+    savedMatchHistory,
+    timeControl.label,
+    turnsPlayed,
+  ]);
+
+  const handleUpdateReplayTree = useCallback((recordId: string, nextTree: ReplayNode) => {
+    setReplayRecord((prev) =>
+      prev && prev.id === recordId ? { ...prev, replayTree: nextTree } : prev
+    );
+    setLastCompletedRecord((prev) =>
+      prev && prev.id === recordId ? { ...prev, replayTree: nextTree } : prev
+    );
+    void updateSavedMatchReplayTree(recordId, nextTree, myProfileRef.current?.uid ?? null).then(
+      (nextList) => {
+        setSavedMatchHistory(nextList);
+      }
+    );
+  }, []);
 
   const endTurn = useCallback(
     (
@@ -1010,6 +1238,7 @@ export default function App() {
           isChessMove: false,
           cardColor: card.color,
           cardValue: card.value,
+          boardAfter: serializeBoardCompact(latestBoard),
         },
       ];
       setMoveHistory(nextHistory);
@@ -1189,6 +1418,7 @@ export default function App() {
             cardColor: card.color,
             cardValue: card.value,
             duelEvent: true,
+            boardAfter: serializeBoardCompact(workingBoard),
           },
         ];
         setMoveHistory(workingHistory);
@@ -1209,6 +1439,7 @@ export default function App() {
             isChessMove: false,
             cardColor: card.color,
             cardValue: card.value,
+            boardAfter: serializeBoardCompact(workingBoard),
           },
         ];
         setMoveHistory(zeroHist);
@@ -1692,6 +1923,9 @@ export default function App() {
             cardColor: currentCard?.color ?? '',
             cardValue: currentCard?.value ?? '',
             syncBonus: syncEligible,
+            boardAfter: serializeBoardCompact(nextBoard),
+            fromSq: coordToSq(move.from),
+            toSq: coordToSq(move.to),
           },
         ];
         setMoveHistory(nextHistory);
@@ -1782,6 +2016,9 @@ export default function App() {
           cardColor: currentCard?.color ?? '',
           cardValue: currentCard?.value ?? '',
           syncBonus: syncEligible,
+          boardAfter: serializeBoardCompact(nextBoard),
+          fromSq: coordToSq(move.from),
+          toSq: coordToSq(move.to),
         },
       ];
       setMoveHistory(nextHistory);
@@ -1967,6 +2204,9 @@ export default function App() {
         san: `${coordToAlgebraic(pendingPromotion.coord)}=${promoLetter}`,
         comment: pieceLabel(type),
         isChessMove: false,
+        boardAfter: serializeBoardCompact(nextBoard),
+        fromSq: coordToSq(pendingPromotion.coord),
+        toSq: coordToSq(pendingPromotion.coord),
       },
     ];
     setMoveHistory(nextHistory);
@@ -2184,6 +2424,34 @@ export default function App() {
         setPendingWildPieceType(null);
         setWildTeleportPending(true);
 
+        const pLetter =
+          pendingWildPieceType === 'queen'
+            ? 'Q'
+            : pendingWildPieceType === 'rook'
+            ? 'R'
+            : pendingWildPieceType === 'bishop'
+            ? 'B'
+            : pendingWildPieceType === 'knight'
+            ? 'N'
+            : 'P';
+        const destSq = coordToSq(coord);
+        const nextHistory: MoveHistoryEntry[] = [
+          ...moveHistory,
+          {
+            ply: moveHistory.length + 1,
+            turnNumber: turnsPlayed,
+            faction: activeFaction,
+            san: `+${pLetter}@${destSq}`,
+            comment: pieceLabel(pendingWildPieceType),
+            isChessMove: false,
+            cardColor: currentCard?.color ?? '',
+            cardValue: 'wild',
+            boardAfter: serializeBoardCompact(nextBoard),
+            toSq: destSq,
+          },
+        ];
+        setMoveHistory(nextHistory);
+
         const step1Moves = getUnoChessLegalMoves(nextBoard, activeFaction, enPassantTarget, 1);
         if (step1Moves.length > 0) {
           setMovesRemaining(1);
@@ -2198,6 +2466,7 @@ export default function App() {
               phase: 'MOVE_PHASE',
               bannerKey: 'bannerWildStep1',
               bannerParams: {},
+              moveHistory: nextHistory,
             });
           }
         } else {
@@ -2213,6 +2482,7 @@ export default function App() {
               phase: 'WILD_TELEPORT_PHASE',
               bannerKey: 'bannerWildStep2',
               bannerParams: {},
+              moveHistory: nextHistory,
             });
           }
         }
@@ -2235,6 +2505,26 @@ export default function App() {
         setSelectedCoord(null);
         setWildTeleportPending(false);
 
+        const fromSq = coordToSq(selectedCoord);
+        const toSq = coordToSq(coord);
+        const nextHistory: MoveHistoryEntry[] = [
+          ...moveHistory,
+          {
+            ply: moveHistory.length + 1,
+            turnNumber: turnsPlayed,
+            faction: activeFaction,
+            san: `⚡${fromSq}→${toSq}`,
+            comment: t('teleportActive'),
+            isChessMove: false,
+            cardColor: currentCard?.color ?? '',
+            cardValue: currentCard?.value ?? 'wild',
+            boardAfter: serializeBoardCompact(nextBoard),
+            fromSq,
+            toSq,
+          },
+        ];
+        setMoveHistory(nextHistory);
+
         // If a pawn was teleported onto its promotion rank, trigger Pawn Promotion!
         const promoRow = moving.faction === 'white' ? 0 : 7;
         if (moving.type === 'pawn' && coord.row === promoRow) {
@@ -2250,12 +2540,23 @@ export default function App() {
               phase: 'PROMOTION_CHOICE',
               bannerKey: 'promoTitle',
               bannerParams: {},
+              moveHistory: nextHistory,
             });
           }
           return;
         }
 
-        endTurn(nextBoard, currentCard);
+        endTurn(
+          nextBoard,
+          currentCard,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          nextHistory
+        );
         return;
       }
       if (clickedPiece && clickedPiece.faction === activeFaction) {
@@ -2288,13 +2589,41 @@ export default function App() {
           setCapturedBlackPieces(nextCapB);
         }
 
+        const destSq = coordToSq(coord);
+        const nextHistory: MoveHistoryEntry[] = [
+          ...moveHistory,
+          {
+            ply: moveHistory.length + 1,
+            turnNumber: turnsPlayed,
+            faction: activeFaction,
+            san: `+2↑${destSq}`,
+            comment: pieceLabel(recovered.type),
+            isChessMove: false,
+            cardColor: currentCard?.color ?? '',
+            cardValue: 'draw2',
+            boardAfter: serializeBoardCompact(nextBoard),
+            toSq: destSq,
+          },
+        ];
+        setMoveHistory(nextHistory);
+
         const rem = plus2Remaining - 1;
         setSelectedRecoverId(null);
         const nextEmpties = getEmptyHomeRows(nextBoard, activeFaction);
         const remainingCapturedCount = ownCapturedPieces.length - 1;
         if (rem <= 0 || nextEmpties.length === 0 || remainingCapturedCount <= 0) {
           setPlus2Remaining(0);
-          endTurn(nextBoard, currentCard, undefined, undefined, nextCapW, nextCapB);
+          endTurn(
+            nextBoard,
+            currentCard,
+            undefined,
+            undefined,
+            nextCapW,
+            nextCapB,
+            undefined,
+            undefined,
+            nextHistory
+          );
         } else {
           setPlus2Remaining(rem);
           setBannerMsg(t('bannerRecoveredMore', { count: rem }));
@@ -2306,6 +2635,7 @@ export default function App() {
               plus2Remaining: rem,
               bannerKey: 'bannerRecoveredMore',
               bannerParams: { count: rem },
+              moveHistory: nextHistory,
             });
           }
         }
@@ -2338,6 +2668,26 @@ export default function App() {
         setBoard(nextBoard);
         setSelectedStealCoord(null);
 
+        const fromSq = coordToSq(selectedStealCoord);
+        const toSq = coordToSq(coord);
+        const nextHistory: MoveHistoryEntry[] = [
+          ...moveHistory,
+          {
+            ply: moveHistory.length + 1,
+            turnNumber: turnsPlayed,
+            faction: activeFaction,
+            san: `+2⇄${fromSq}→${toSq}`,
+            comment: pieceLabel(stolen.type),
+            isChessMove: false,
+            cardColor: currentCard?.color ?? '',
+            cardValue: 'draw2',
+            boardAfter: serializeBoardCompact(nextBoard),
+            fromSq,
+            toSq,
+          },
+        ];
+        setMoveHistory(nextHistory);
+
         const nextPrio = getHighestPriorityEnemyCoords(nextBoard, enemyFaction);
         const nextEmpties = getEmptyHomeRows(nextBoard, activeFaction);
         const wasTier3 = stolen.type === 'rook' || stolen.type === 'queen';
@@ -2345,7 +2695,17 @@ export default function App() {
 
         if (rem <= 0 || nextPrio.tier === 4 || nextEmpties.length === 0) {
           setPlus2Remaining(0);
-          endTurn(nextBoard, currentCard);
+          endTurn(
+            nextBoard,
+            currentCard,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            nextHistory
+          );
         } else {
           const cappedRem = nextPrio.tier === 3 ? 1 : rem;
           setPlus2Remaining(cappedRem);
@@ -2356,6 +2716,7 @@ export default function App() {
               plus2Remaining: cappedRem,
               bannerKey: 'bannerStolenMore',
               bannerParams: { count: cappedRem },
+              moveHistory: nextHistory,
             });
           }
         }
@@ -2375,11 +2736,39 @@ export default function App() {
         const nextExiled = [...exiledPieces, victim];
         setExiledPieces(nextExiled);
 
+        const targetSq = coordToSq(coord);
+        const nextHistory: MoveHistoryEntry[] = [
+          ...moveHistory,
+          {
+            ply: moveHistory.length + 1,
+            turnNumber: turnsPlayed,
+            faction: activeFaction,
+            san: `+4✕${targetSq}`,
+            comment: pieceLabel(victim.type),
+            isChessMove: false,
+            cardColor: '',
+            cardValue: 'wild-draw',
+            boardAfter: serializeBoardCompact(nextBoard),
+            toSq: targetSq,
+          },
+        ];
+        setMoveHistory(nextHistory);
+
         const nextPrio = getHighestPriorityEnemyCoords(nextBoard, enemyFaction);
         const rem = plus4Remaining - 1;
         if (rem <= 0 || nextPrio.tier === 4) {
           setPlus4Remaining(0);
-          endTurn(nextBoard, currentCard, undefined, undefined, undefined, undefined, nextExiled);
+          endTurn(
+            nextBoard,
+            currentCard,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            nextExiled,
+            undefined,
+            nextHistory
+          );
         } else {
           setPlus4Remaining(rem);
           setBannerMsg(t('bannerEliminatedMore', { count: rem }));
@@ -2390,6 +2779,7 @@ export default function App() {
               plus4Remaining: rem,
               bannerKey: 'bannerEliminatedMore',
               bannerParams: { count: rem },
+              moveHistory: nextHistory,
             });
           }
         }
@@ -2564,6 +2954,34 @@ export default function App() {
           setBoard(nextBoard);
           setPendingWildPieceType(null);
           setWildTeleportPending(true);
+
+          const pLetter =
+            pendingWildPieceType === 'queen'
+              ? 'Q'
+              : pendingWildPieceType === 'rook'
+              ? 'R'
+              : pendingWildPieceType === 'bishop'
+              ? 'B'
+              : pendingWildPieceType === 'knight'
+              ? 'N'
+              : 'P';
+          const destSq = coordToSq(dest);
+          setMoveHistory((prev) => [
+            ...prev,
+            {
+              ply: prev.length + 1,
+              turnNumber: turnsPlayed,
+              faction: activeFaction,
+              san: `+${pLetter}@${destSq}`,
+              comment: pieceLabel(pendingWildPieceType),
+              isChessMove: false,
+              cardColor: currentCard?.color ?? '',
+              cardValue: 'wild',
+              boardAfter: serializeBoardCompact(nextBoard),
+              toSq: destSq,
+            },
+          ]);
+
           const step1Moves = getUnoChessLegalMoves(nextBoard, activeFaction, enPassantTarget, 1);
           if (step1Moves.length > 0) {
             setMovesRemaining(1);
@@ -2617,7 +3035,36 @@ export default function App() {
           sound.playSpecial();
           setBoard(nextBoard);
           setWildTeleportPending(false);
-          endTurn(nextBoard, currentCard);
+          const fromSq = coordToSq(tp.from);
+          const toSq = coordToSq(tp.to);
+          const nextHistory: MoveHistoryEntry[] = [
+            ...moveHistory,
+            {
+              ply: moveHistory.length + 1,
+              turnNumber: turnsPlayed,
+              faction: activeFaction,
+              san: `⚡${fromSq}→${toSq}`,
+              comment: t('teleportActive'),
+              isChessMove: false,
+              cardColor: currentCard?.color ?? '',
+              cardValue: currentCard?.value ?? 'wild',
+              boardAfter: serializeBoardCompact(nextBoard),
+              fromSq,
+              toSq,
+            },
+          ];
+          setMoveHistory(nextHistory);
+          endTurn(
+            nextBoard,
+            currentCard,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            nextHistory
+          );
         } else {
           setWildTeleportPending(false);
           endTurn(board, currentCard);
@@ -2631,15 +3078,46 @@ export default function App() {
           nextBoard[dest.row][dest.col] = { ...recovered, hasMoved: true };
           sound.playSpecial();
           setBoard(nextBoard);
+          let nextCapW = capturedWhitePieces;
+          let nextCapB = capturedBlackPieces;
           if (activeFaction === 'white') {
-            setCapturedWhitePieces((prev) => prev.filter((p) => p.id !== recovered.id));
+            nextCapW = capturedWhitePieces.filter((p) => p.id !== recovered.id);
+            setCapturedWhitePieces(nextCapW);
           } else {
-            setCapturedBlackPieces((prev) => prev.filter((p) => p.id !== recovered.id));
+            nextCapB = capturedBlackPieces.filter((p) => p.id !== recovered.id);
+            setCapturedBlackPieces(nextCapB);
           }
+          const destSq = coordToSq(dest);
+          const nextHistory: MoveHistoryEntry[] = [
+            ...moveHistory,
+            {
+              ply: moveHistory.length + 1,
+              turnNumber: turnsPlayed,
+              faction: activeFaction,
+              san: `+2↑${destSq}`,
+              comment: pieceLabel(recovered.type),
+              isChessMove: false,
+              cardColor: currentCard?.color ?? '',
+              cardValue: 'draw2',
+              boardAfter: serializeBoardCompact(nextBoard),
+              toSq: destSq,
+            },
+          ];
+          setMoveHistory(nextHistory);
           const rem = plus2Remaining - 1;
           if (rem <= 0 || empties.length <= 1 || ownCapturedPieces.length <= 1) {
             setPlus2Remaining(0);
-            endTurn(nextBoard, currentCard);
+            endTurn(
+              nextBoard,
+              currentCard,
+              undefined,
+              undefined,
+              nextCapW,
+              nextCapB,
+              undefined,
+              undefined,
+              nextHistory
+            );
           } else {
             setPlus2Remaining(rem);
           }
@@ -2664,12 +3142,41 @@ export default function App() {
             };
             sound.playCapture();
             setBoard(nextBoard);
+            const fromSq = coordToSq(targetCoord);
+            const toSq = coordToSq(dest);
+            const nextHistory: MoveHistoryEntry[] = [
+              ...moveHistory,
+              {
+                ply: moveHistory.length + 1,
+                turnNumber: turnsPlayed,
+                faction: activeFaction,
+                san: `+2⇄${fromSq}→${toSq}`,
+                comment: pieceLabel(stolen.type),
+                isChessMove: false,
+                cardColor: currentCard?.color ?? '',
+                cardValue: 'draw2',
+                boardAfter: serializeBoardCompact(nextBoard),
+                fromSq,
+                toSq,
+              },
+            ];
+            setMoveHistory(nextHistory);
             const wasTier3 = stolen.type === 'rook' || stolen.type === 'queen';
             const rem = wasTier3 ? 0 : plus2Remaining - 1;
             const nextPrio = getHighestPriorityEnemyCoords(nextBoard, enemyFaction);
             if (rem <= 0 || nextPrio.tier === 4 || empties.length <= 1) {
               setPlus2Remaining(0);
-              endTurn(nextBoard, currentCard);
+              endTurn(
+                nextBoard,
+                currentCard,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                nextHistory
+              );
             } else {
               setPlus2Remaining(nextPrio.tier === 3 ? 1 : rem);
             }
@@ -2687,12 +3194,40 @@ export default function App() {
           nextBoard[targetCoord.row][targetCoord.col] = null;
           sound.playCapture();
           setBoard(nextBoard);
-          if (victim) setExiledPieces((prev) => [...prev, victim]);
+          const nextExiled = victim ? [...exiledPieces, victim] : exiledPieces;
+          if (victim) setExiledPieces(nextExiled);
+          const targetSq = coordToSq(targetCoord);
+          const nextHistory: MoveHistoryEntry[] = [
+            ...moveHistory,
+            {
+              ply: moveHistory.length + 1,
+              turnNumber: turnsPlayed,
+              faction: activeFaction,
+              san: `+4✕${targetSq}`,
+              comment: victim ? pieceLabel(victim.type) : '',
+              isChessMove: false,
+              cardColor: '',
+              cardValue: 'wild-draw',
+              boardAfter: serializeBoardCompact(nextBoard),
+              toSq: targetSq,
+            },
+          ];
+          setMoveHistory(nextHistory);
           const rem = plus4Remaining - 1;
           const nextPrio = getHighestPriorityEnemyCoords(nextBoard, enemyFaction);
           if (rem <= 0 || nextPrio.tier === 4) {
             setPlus4Remaining(0);
-            endTurn(nextBoard, currentCard);
+            endTurn(
+              nextBoard,
+              currentCard,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              nextExiled,
+              undefined,
+              nextHistory
+            );
           } else {
             setPlus4Remaining(rem);
           }
@@ -2713,6 +3248,8 @@ export default function App() {
     activePlayer,
     board,
     botLevel,
+    capturedBlackPieces,
+    capturedWhitePieces,
     currentCard,
     discardPile,
     drawPile,
@@ -2720,20 +3257,24 @@ export default function App() {
     endTurn,
     enemyFaction,
     executeMove,
+    exiledPieces,
     handleSelectPlus4Mode,
     handleSelectWildColor,
     isFirstMoveOfTurn,
     isPaused,
     mode,
+    moveHistory,
     movesRemaining,
     ownCapturedPieces,
     pendingWildPieceType,
     phase,
+    pieceLabel,
     playerLabel,
     plus2Remaining,
     plus4Remaining,
     resolveDrawnCard,
     t,
+    turnsPlayed,
   ]);
 
   const enemyHasAttackTargets = useMemo(() => {
@@ -2902,10 +3443,15 @@ export default function App() {
             profile={myProfile}
             profileLoading={profileLoading}
             pendingJoinMatchId={pendingJoinMatchId}
+            historyCount={savedMatchHistory.length}
             onClearPendingJoin={handleClearPendingJoin}
             onProfileSaved={handleProfileSaved}
             onSwitchAccount={handleSwitchAccount}
             onEnterMatch={handleEnterOnlineMatch}
+            onOpenHistory={() => {
+              void refreshMatchHistory();
+              setIsProfileHistoryOpen(true);
+            }}
             onBack={handleLobbyBack}
           />
         ) : phase === 'TITLE_MENU' ? (
@@ -2916,6 +3462,7 @@ export default function App() {
             localPlayStyle={localPlayStyle}
             timeControl={timeControl}
             profile={myProfile}
+            historyCount={savedMatchHistory.length}
             onChangeMode={(m) => {
               sound.playClick();
               setMode(m);
@@ -2941,6 +3488,11 @@ export default function App() {
               sound.playClick();
               setMode('online');
               setShowOnlineLobby(true);
+            }}
+            onOpenHistory={() => {
+              sound.playClick();
+              void refreshMatchHistory();
+              setIsProfileHistoryOpen(true);
             }}
             onOpenGuide={() => {
               sound.playClick();
@@ -3258,6 +3810,7 @@ export default function App() {
         isOnline={mode === 'online'}
         eloDelta={onlineEloResult?.delta ?? null}
         didWinOnline={onlineEloResult?.didWin ?? false}
+        onWatchGame={handleWatchCurrentGame}
         onDownloadPgn={handleDownloadPgn}
         onPlayAgain={startNewGame}
         onMainMenu={() => {
@@ -3272,6 +3825,29 @@ export default function App() {
           } else {
             setPhase('TITLE_MENU');
           }
+        }}
+      />
+
+      <ProfileHistoryModal
+        isOpen={isProfileHistoryOpen}
+        profile={myProfile}
+        matches={savedMatchHistory}
+        loading={historyLoading}
+        onSelectMatch={(rec) => {
+          setIsProfileHistoryOpen(false);
+          setReplayRecord(rec);
+        }}
+        onClose={() => {
+          setIsProfileHistoryOpen(false);
+        }}
+      />
+
+      <GameReplayModal
+        isOpen={replayRecord !== null}
+        record={replayRecord}
+        onUpdateTree={handleUpdateReplayTree}
+        onClose={() => {
+          setReplayRecord(null);
         }}
       />
     </div>

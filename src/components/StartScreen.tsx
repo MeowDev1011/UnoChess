@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { BookOpen, Bot, Check, ChevronDown, Clock, Globe, Link2, Play, Trophy, Users, Wifi } from 'lucide-react';
+import { BookOpen, Bot, Check, ChevronDown, Clock, Globe, History, Link2, Play, Trophy, Users, Wifi } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   BotLevel,
@@ -22,6 +22,7 @@ interface StartScreenProps {
   localPlayStyle: LocalPlayStyle;
   timeControl: TimeControlPreset;
   profile?: PlayerProfile | null;
+  historyCount?: number;
   onChangeMode: (mode: GameMode) => void;
   onChangeBotLevel: (level: BotLevel) => void;
   onChangePlayerColor: (color: Faction) => void;
@@ -29,6 +30,7 @@ interface StartScreenProps {
   onChangeTimeControl: (tc: TimeControlPreset) => void;
   onStartGame: () => void;
   onOpenOnlineLobby: () => void;
+  onOpenHistory?: () => void;
   onOpenGuide: () => void;
 }
 
@@ -39,6 +41,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({
   localPlayStyle,
   timeControl,
   profile,
+  historyCount = 0,
   onChangeMode,
   onChangeBotLevel,
   onChangePlayerColor,
@@ -46,6 +49,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({
   onChangeTimeControl,
   onStartGame,
   onOpenOnlineLobby,
+  onOpenHistory,
   onOpenGuide,
 }) => {
   const { t, i18n } = useTranslation();
@@ -87,8 +91,26 @@ export const StartScreen: React.FC<StartScreenProps> = ({
 
   return (
     <div className="relative flex min-h-[100dvh] w-full flex-col items-center justify-between px-4 py-3.5">
-      {/* Top Bar: Compact 25-Language Selector */}
-      <div className="relative z-30 flex w-full max-w-sm justify-end">
+      {/* Top Bar: Profile History Button & Compact 25-Language Selector */}
+      <div className="relative z-30 flex w-full max-w-sm items-center justify-between gap-2">
+        {(profile || historyCount > 0) && onOpenHistory ? (
+          <button
+            type="button"
+            onClick={onOpenHistory}
+            className="flex min-h-[38px] items-center gap-1.5 rounded-xl border-2 border-slate-950 bg-slate-900/90 px-3 py-1 text-xs font-extrabold text-amber-200 shadow-lg backdrop-blur-sm transition hover:border-amber-400 hover:bg-slate-800"
+          >
+            <History className="h-3.5 w-3.5 text-amber-300" />
+            <span className="max-w-[125px] truncate">{t('profileHistoryBtn')}</span>
+            {historyCount > 0 && (
+              <span className="rounded-md bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-extrabold text-amber-300 tabular-nums">
+                {historyCount}
+              </span>
+            )}
+          </button>
+        ) : (
+          <div />
+        )}
+
         <button
           type="button"
           onClick={() => setLangMenuOpen((o) => !o)}

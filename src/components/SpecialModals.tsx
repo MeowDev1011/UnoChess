@@ -1,5 +1,5 @@
 import React from 'react';
-import { Crown, Download, Flame, Home, RotateCcw, Swords, Trophy, Zap } from 'lucide-react';
+import { Crown, Download, Eye, Flame, Home, RotateCcw, Swords, Trophy, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { CardColor, Faction, PieceType, WILD_COLOR_PIECE_MAP } from '../types/game';
 import { getColorBaseAsset } from '../engine/deck';
@@ -237,6 +237,7 @@ interface GameOverModalProps {
   isOnline?: boolean;
   eloDelta?: number | null;
   didWinOnline?: boolean;
+  onWatchGame: () => void;
   onDownloadPgn: () => void;
   onPlayAgain: () => void;
   onMainMenu: () => void;
@@ -251,6 +252,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
   isOnline = false,
   eloDelta = null,
   didWinOnline = false,
+  onWatchGame,
   onDownloadPgn,
   onPlayAgain,
   onMainMenu,
@@ -302,6 +304,15 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
         </div>
 
         <div className="mt-6 space-y-2.5">
+          <button
+            type="button"
+            onClick={onWatchGame}
+            className="flex min-h-[46px] w-full items-center justify-center gap-2 rounded-2xl border-3 border-slate-950 bg-gradient-to-b from-violet-400 to-indigo-600 px-4 py-2 text-sm font-extrabold text-white shadow-[0_4px_0_#0f172a] transition hover:brightness-105 active:translate-y-0.5 active:shadow-none"
+          >
+            <Eye className="h-4 w-4" />
+            {t('watchMatch')}
+          </button>
+
           <button
             type="button"
             onClick={onDownloadPgn}

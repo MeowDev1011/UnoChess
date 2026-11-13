@@ -184,6 +184,43 @@ service cloud.firestore {
         && isValidTimestamp(data.updatedAt);
     }
 
+    function isValidMatchRecord(data) {
+      return data.keys().hasAll([
+          'id', 'ownerUid', 'mode', 'whiteName', 'blackName',
+          'playerFaction', 'result', 'outcome', 'reasonText',
+          'timeControlLabel', 'turnsPlayed', 'elapsedSeconds',
+          'createdAtMs', 'moves', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerUid', 'mode', 'whiteName', 'blackName',
+          'whiteElo', 'blackElo', 'playerFaction', 'result',
+          'outcome', 'reasonText', 'timeControlLabel', 'turnsPlayed',
+          'elapsedSeconds', 'eloDelta', 'createdAtMs', 'moves',
+          'replayTree', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.ownerUid)
+        && data.mode in ['bot', 'local', 'online']
+        && data.whiteName is string && data.whiteName.size() >= 1 && data.whiteName.size() <= 40
+        && data.blackName is string && data.blackName.size() >= 1 && data.blackName.size() <= 40
+        && (!('whiteElo' in data) || data.whiteElo == null || (data.whiteElo is number && data.whiteElo >= 0 && data.whiteElo <= 4000))
+        && (!('blackElo' in data) || data.blackElo == null || (data.blackElo is number && data.blackElo >= 0 && data.blackElo <= 4000))
+        && data.playerFaction in ['white', 'black']
+        && data.result in ['1-0', '0-1', '1/2-1/2', '*']
+        && data.outcome in ['win', 'loss', 'draw']
+        && data.reasonText is string && data.reasonText.size() <= 120
+        && data.timeControlLabel is string && data.timeControlLabel.size() >= 1 && data.timeControlLabel.size() <= 24
+        && data.turnsPlayed is number && data.turnsPlayed >= 1 && data.turnsPlayed <= 2000
+        && data.elapsedSeconds is number && data.elapsedSeconds >= 0 && data.elapsedSeconds <= 86400
+        && (!('eloDelta' in data) || data.eloDelta == null || (data.eloDelta is number && data.eloDelta >= 0 && data.eloDelta <= 200))
+        && data.createdAtMs is number && data.createdAtMs >= 0
+        && data.moves is list && data.moves.size() <= 500
+        && (data.moves.size() == 0 || data.moves[0] is map)
+        && (!('replayTree' in data) || data.replayTree is map)
+        && isValidTimestamp(data.createdAt)
+        && isValidTimestamp(data.updatedAt);
+    }
+
     // ---------- /players/{uid} ----------
     match /players/{uid} {
       allow get: if isValidId(uid);
@@ -211,6 +248,35 @@ service cloud.firestore {
         );
 
       allow delete: if false;
+
+      // ---------- /players/{uid}/matches/{recordId} ----------
+      match /matches/{recordId} {
+        allow get: if isValidId(uid) && isValidId(recordId)
+          && exists(/databases/$(database)/documents/players/$(uid));
+        allow list: if isValidId(uid)
+          && existing().ownerUid == uid;
+
+        allow create: if isValidId(uid) && isValidId(recordId)
+          && exists(/databases/$(database)/documents/players/$(uid))
+          && isValidMatchRecord(incoming())
+          && incoming().id == recordId
+          && incoming().ownerUid == uid
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+
+        allow update: if isValidId(uid) && isValidId(recordId)
+          && exists(/databases/$(database)/documents/players/$(uid))
+          && isValidMatchRecord(incoming())
+          && incoming().id == existing().id
+          && incoming().ownerUid == existing().ownerUid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'moves', 'replayTree', 'updatedAt'
+          ]);
+
+        allow delete: if false;
+      }
     }
 
     // ---------- /challenges/{challengeId} ----------

@@ -973,6 +973,11 @@ export async function pushMatchUpdate(
       cardValue: entry.cardValue ?? '',
       syncBonus: Boolean(entry.syncBonus),
       duelEvent: Boolean(entry.duelEvent),
+      boardAfter: typeof entry.boardAfter === 'string' ? entry.boardAfter.slice(0, 128) : '',
+      fromSq: typeof entry.fromSq === 'string' ? entry.fromSq.slice(0, 4) : '',
+      toSq: typeof entry.toSq === 'string' ? entry.toSq.slice(0, 4) : '',
+      nag: entry.nag ?? '',
+      userComment: typeof entry.userComment === 'string' ? entry.userComment.slice(0, 160) : '',
     }));
   }
   if (typeof cleanPatch.lastDuelText === 'string') {

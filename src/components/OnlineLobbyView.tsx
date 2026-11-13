@@ -6,6 +6,7 @@ import {
   Copy,
   Edit3,
   ExternalLink,
+  History,
   Link2,
   LogOut,
   Share2,
@@ -53,10 +54,12 @@ interface OnlineLobbyViewProps {
   profile: PlayerProfile | null;
   profileLoading: boolean;
   pendingJoinMatchId: string | null;
+  historyCount?: number;
   onClearPendingJoin: () => void;
   onProfileSaved: (profile: PlayerProfile) => void;
   onSwitchAccount: () => void;
   onEnterMatch: (matchId: string, joinNotice?: string) => void;
+  onOpenHistory: () => void;
   onBack: () => void;
 }
 
@@ -64,10 +67,12 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
   profile,
   profileLoading,
   pendingJoinMatchId,
+  historyCount = 0,
   onClearPendingJoin,
   onProfileSaved,
   onSwitchAccount,
   onEnterMatch,
+  onOpenHistory,
   onBack,
 }) => {
   const { t } = useTranslation();
@@ -890,6 +895,24 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
                   );
                 })}
               </div>
+
+              {/* Match History Action inside Profile */}
+              <button
+                type="button"
+                onClick={() => {
+                  sound.playClick();
+                  onOpenHistory();
+                }}
+                className="flex min-h-[34px] w-full items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950/75 px-3 py-1.5 text-xs font-extrabold text-amber-200 transition hover:border-amber-400 hover:bg-slate-800"
+              >
+                <History className="h-3.5 w-3.5 text-amber-300" />
+                <span>{t('profileHistoryBtn')}</span>
+                {historyCount > 0 && (
+                  <span className="rounded-md bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-extrabold text-amber-300 tabular-nums">
+                    {historyCount}
+                  </span>
+                )}
+              </button>
             </div>
 
             {lichessError && (

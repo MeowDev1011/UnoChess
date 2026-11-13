@@ -54,6 +54,8 @@ export const PIECE_BASE_COLOR_MAP: Record<PieceType, CardColor> = {
   king: 'yellow',
 };
 
+export type MoveAnnotation = '!!' | '!' | '!?' | '?!' | '?' | '??' | '';
+
 export interface MoveHistoryEntry {
   ply: number;
   turnNumber: number;
@@ -65,6 +67,52 @@ export interface MoveHistoryEntry {
   cardValue?: CardValue | '';
   syncBonus?: boolean;
   duelEvent?: boolean;
+  boardAfter?: string; // 128-char compact board snapshot
+  fromSq?: string;
+  toSq?: string;
+  nag?: MoveAnnotation;
+  userComment?: string;
+}
+
+export interface ReplayNode {
+  id: string;
+  ply: number;
+  turnNumber: number;
+  faction: Faction;
+  san: string;
+  boardStr: string;
+  fromSq?: string;
+  toSq?: string;
+  nag?: MoveAnnotation;
+  comment?: string;
+  userComment?: string;
+  cardColor?: CardColor | '';
+  cardValue?: CardValue | '';
+  syncBonus?: boolean;
+  duelEvent?: boolean;
+  isChessMove?: boolean;
+  children: ReplayNode[];
+}
+
+export interface SavedMatchRecord {
+  id: string;
+  ownerUid: string;
+  mode: GameMode;
+  whiteName: string;
+  blackName: string;
+  whiteElo?: number | null;
+  blackElo?: number | null;
+  playerFaction: Faction;
+  result: '1-0' | '0-1' | '1/2-1/2' | '*';
+  outcome: 'win' | 'loss' | 'draw';
+  reasonText: string;
+  timeControlLabel: string;
+  turnsPlayed: number;
+  elapsedSeconds: number;
+  eloDelta?: number | null;
+  createdAtMs: number;
+  moves: MoveHistoryEntry[];
+  replayTree?: ReplayNode;
 }
 
 export type TimeControlCategory = 'unlimited' | 'bullet' | 'blitz' | 'rapid' | 'classical';
