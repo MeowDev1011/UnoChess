@@ -1,24 +1,44 @@
 import React from 'react';
-import { Crown, Flame, Home, RotateCcw, Swords, Zap } from 'lucide-react';
+import { Crown, Download, Flame, Home, RotateCcw, Swords, Trophy, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { CardColor, Faction, PieceType } from '../types/game';
+import { CardColor, Faction, PieceType, WILD_COLOR_PIECE_MAP } from '../types/game';
 import { getColorBaseAsset } from '../engine/deck';
 import { ChessPieceGraphic } from './ChessPieceGraphic';
 
 interface WildColorModalProps {
   isOpen: boolean;
+  faction: Faction;
   onSelectColor: (color: CardColor) => void;
 }
 
-export const WildColorModal: React.FC<WildColorModalProps> = ({ isOpen, onSelectColor }) => {
+export const WildColorModal: React.FC<WildColorModalProps> = ({
+  isOpen,
+  faction,
+  onSelectColor,
+}) => {
   const { t } = useTranslation();
   if (!isOpen) return null;
 
-  const colors: { key: CardColor; label: string }[] = [
-    { key: 'red', label: t('colorRed') },
-    { key: 'blue', label: t('colorBlue') },
-    { key: 'green', label: t('colorGreen') },
-    { key: 'yellow', label: t('colorYellow') },
+  const pieceName = (type: PieceType) => {
+    switch (type) {
+      case 'queen':
+        return t('pieceQueen');
+      case 'rook':
+        return t('pieceRook');
+      case 'bishop':
+        return t('pieceBishop');
+      case 'knight':
+        return t('pieceKnight');
+      default:
+        return '';
+    }
+  };
+
+  const colors: { key: CardColor; label: string; piece: PieceType }[] = [
+    { key: 'red', label: t('colorRed'), piece: WILD_COLOR_PIECE_MAP.red },
+    { key: 'blue', label: t('colorBlue'), piece: WILD_COLOR_PIECE_MAP.blue },
+    { key: 'green', label: t('colorGreen'), piece: WILD_COLOR_PIECE_MAP.green },
+    { key: 'yellow', label: t('colorYellow'), piece: WILD_COLOR_PIECE_MAP.yellow },
   ];
 
   return (
@@ -26,7 +46,7 @@ export const WildColorModal: React.FC<WildColorModalProps> = ({ isOpen, onSelect
       role="dialog"
       aria-modal="true"
       aria-label={t('wildColorTitle')}
-      className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
     >
       <div className="w-full max-w-xs rounded-3xl border-4 border-slate-950 bg-slate-900 p-5 text-center shadow-2xl">
         <h2 className="font-display text-outline-sm text-2xl font-bold text-amber-300">
@@ -40,7 +60,7 @@ export const WildColorModal: React.FC<WildColorModalProps> = ({ isOpen, onSelect
               key={c.key}
               type="button"
               onClick={() => onSelectColor(c.key)}
-              className="group relative flex min-h-[68px] flex-col items-center justify-center overflow-hidden rounded-2xl border-3 border-slate-950 shadow-[0_4px_0_#0f172a] transition hover:scale-[1.03] active:translate-y-0.5 active:shadow-none"
+              className="group relative flex min-h-[96px] flex-col items-center justify-center overflow-hidden rounded-2xl border-3 border-slate-950 px-2 py-2 shadow-[0_4px_0_#0f172a] transition hover:scale-[1.03] active:translate-y-0.5 active:shadow-none"
             >
               <img
                 src={getColorBaseAsset(c.key)}
@@ -48,9 +68,24 @@ export const WildColorModal: React.FC<WildColorModalProps> = ({ isOpen, onSelect
                 referrerPolicy="no-referrer"
                 className="absolute inset-0 h-full w-full object-cover"
               />
-              <span className="text-outline-sm relative z-10 text-base font-extrabold text-white">
-                {c.label}
-              </span>
+              <div className="relative z-10 flex flex-col items-center">
+                <ChessPieceGraphic
+                  piece={{
+                    id: `wild-${c.key}`,
+                    type: c.piece,
+                    faction,
+                    pieceNumber: 1,
+                    hasMoved: true,
+                  }}
+                  size="tray"
+                />
+                <span className="text-outline-sm mt-0.5 text-sm font-extrabold text-white">
+                  {c.label}
+                </span>
+                <span className="rounded-md bg-slate-950/75 px-1.5 py-0.5 text-[11px] font-extrabold text-amber-200">
+                  + {pieceName(c.piece)}
+                </span>
+              </div>
             </button>
           ))}
         </div>
@@ -78,7 +113,7 @@ export const WildPlus4Modal: React.FC<WildPlus4ModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label={t('wildPlus4Title')}
-      className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
     >
       <div className="w-full max-w-sm rounded-3xl border-4 border-slate-950 bg-slate-900 p-5 shadow-2xl">
         <div className="mb-4 text-center">
@@ -156,7 +191,7 @@ export const PromotionModal: React.FC<PromotionModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label={t('promoTitle')}
-      className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
     >
       <div className="w-full max-w-xs rounded-3xl border-4 border-slate-950 bg-slate-900 p-5 text-center shadow-2xl">
         <h2 className="font-display text-outline-sm text-xl font-bold text-amber-300">
@@ -199,6 +234,10 @@ interface GameOverModalProps {
   reason: string;
   turnsPlayed: number;
   elapsedSeconds: number;
+  isOnline?: boolean;
+  eloDelta?: number | null;
+  didWinOnline?: boolean;
+  onDownloadPgn: () => void;
   onPlayAgain: () => void;
   onMainMenu: () => void;
 }
@@ -209,6 +248,10 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
   reason,
   turnsPlayed,
   elapsedSeconds,
+  isOnline = false,
+  eloDelta = null,
+  didWinOnline = false,
+  onDownloadPgn,
   onPlayAgain,
   onMainMenu,
 }) => {
@@ -224,7 +267,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label={t('playAgain')}
-      className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
     >
       <div className="w-full max-w-sm rounded-3xl border-4 border-slate-950 bg-gradient-to-b from-slate-800 to-slate-950 p-6 text-center shadow-2xl">
         <div className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-2xl border-3 border-slate-950 bg-amber-400 text-slate-950 shadow-lg">
@@ -237,6 +280,21 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
 
         <p className="mt-2 text-sm font-semibold text-slate-200">{reason}</p>
 
+        {isOnline && eloDelta !== null && eloDelta > 0 && (
+          <div className="mt-3 flex justify-center">
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-xl border-2 border-slate-950 px-3 py-1 text-xs font-extrabold tabular-nums ${
+                didWinOnline ? 'bg-emerald-400 text-slate-950' : 'bg-rose-500 text-white'
+              }`}
+            >
+              <Trophy className="h-3.5 w-3.5" />
+              {didWinOnline
+                ? t('onlineEloDeltaGain', { delta: eloDelta })
+                : t('onlineEloDeltaLoss', { delta: eloDelta })}
+            </span>
+          </div>
+        )}
+
         <div className="mt-4 flex items-center justify-center gap-4 text-xs font-bold text-slate-300 tabular-nums">
           <span>{t('turnsLabel', { count: turnsPlayed })}</span>
           <span aria-hidden="true">·</span>
@@ -246,20 +304,31 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
         <div className="mt-6 space-y-2.5">
           <button
             type="button"
-            onClick={onPlayAgain}
-            className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-2xl border-3 border-slate-950 bg-gradient-to-b from-emerald-400 to-emerald-600 px-5 py-3 text-base font-extrabold text-slate-950 shadow-[0_4px_0_#0f172a] transition hover:brightness-105 active:translate-y-0.5 active:shadow-none"
+            onClick={onDownloadPgn}
+            className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-2xl border-3 border-slate-950 bg-gradient-to-b from-sky-400 to-blue-600 px-4 py-2 text-sm font-extrabold text-white shadow-[0_4px_0_#0f172a] transition hover:brightness-105 active:translate-y-0.5 active:shadow-none"
           >
-            <RotateCcw className="h-5 w-5" />
-            {t('playAgain')}
+            <Download className="h-4 w-4" />
+            {t('downloadPgn')}
           </button>
+
+          {!isOnline && (
+            <button
+              type="button"
+              onClick={onPlayAgain}
+              className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-2xl border-3 border-slate-950 bg-gradient-to-b from-emerald-400 to-emerald-600 px-5 py-3 text-base font-extrabold text-slate-950 shadow-[0_4px_0_#0f172a] transition hover:brightness-105 active:translate-y-0.5 active:shadow-none"
+            >
+              <RotateCcw className="h-5 w-5" />
+              {t('playAgain')}
+            </button>
+          )}
 
           <button
             type="button"
             onClick={onMainMenu}
-            className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-2xl border-2 border-slate-950 bg-slate-700 px-4 py-2.5 text-sm font-bold text-white shadow-[0_3px_0_#0f172a] transition hover:bg-slate-600 active:translate-y-0.5 active:shadow-none"
+            className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-2xl border-3 border-slate-950 bg-gradient-to-b from-amber-300 to-amber-500 px-4 py-2.5 text-sm font-extrabold text-slate-950 shadow-[0_4px_0_#0f172a] transition hover:brightness-105 active:translate-y-0.5 active:shadow-none"
           >
             <Home className="h-4 w-4" />
-            {t('mainMenu')}
+            {isOnline ? t('onlineLobbyTitle') : t('mainMenu')}
           </button>
         </div>
       </div>

@@ -1,10 +1,11 @@
 import React from 'react';
-import { BookOpen, Globe, Home, Music, Play, RotateCcw, Volume2, VolumeX } from 'lucide-react';
+import { BookOpen, Flag, Globe, Home, Music, Play, RotateCcw, Volume2, VolumeX } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { SUPPORTED_LANGUAGES } from '../i18n/languages';
 
 interface PauseModalProps {
   isOpen: boolean;
+  isOnline?: boolean;
   musicVolume: number;
   sfxVolume: number;
   musicMuted: boolean;
@@ -16,11 +17,13 @@ interface PauseModalProps {
   onToggleSfxMute: () => void;
   onOpenGuide: () => void;
   onRestart: () => void;
+  onResign?: () => void;
   onExitToMenu: () => void;
 }
 
 export const PauseModal: React.FC<PauseModalProps> = ({
   isOpen,
+  isOnline = false,
   musicVolume,
   sfxVolume,
   musicMuted,
@@ -32,6 +35,7 @@ export const PauseModal: React.FC<PauseModalProps> = ({
   onToggleSfxMute,
   onOpenGuide,
   onRestart,
+  onResign,
   onExitToMenu,
 }) => {
   const { t, i18n } = useTranslation();
@@ -51,9 +55,11 @@ export const PauseModal: React.FC<PauseModalProps> = ({
           <h2 className="font-display text-outline text-3xl font-bold tracking-wide text-amber-300">
             {t('pauseTitle')}
           </h2>
-          <p className="mt-1 text-xs font-medium text-slate-300">
-            {t('pauseTimerStopped')}
-          </p>
+          {!isOnline && (
+            <p className="mt-1 text-xs font-medium text-slate-300">
+              {t('pauseTimerStopped')}
+            </p>
+          )}
         </div>
 
         {/* 1. Resume */}
@@ -161,20 +167,31 @@ export const PauseModal: React.FC<PauseModalProps> = ({
           {t('cardGuideBtn')}
         </button>
 
-        {/* 4. Restart / Exit */}
+        {/* 4. Restart / Resign / Exit */}
         <div className="grid grid-cols-2 gap-2.5">
-          <button
-            type="button"
-            onClick={onRestart}
-            className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border-2 border-slate-950 bg-amber-400 px-3 py-2 text-xs font-extrabold text-slate-950 shadow-[0_3px_0_#0f172a] transition hover:brightness-105 active:translate-y-0.5 active:shadow-none"
-          >
-            <RotateCcw className="h-4 w-4" />
-            {t('restartBtn')}
-          </button>
+          {isOnline && onResign ? (
+            <button
+              type="button"
+              onClick={onResign}
+              className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border-2 border-slate-950 bg-rose-500 px-3 py-2 text-xs font-extrabold text-white shadow-[0_3px_0_#0f172a] transition hover:brightness-105 active:translate-y-0.5 active:shadow-none"
+            >
+              <Flag className="h-4 w-4" />
+              {t('onlineResignBtn')}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onRestart}
+              className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border-2 border-slate-950 bg-amber-400 px-3 py-2 text-xs font-extrabold text-slate-950 shadow-[0_3px_0_#0f172a] transition hover:brightness-105 active:translate-y-0.5 active:shadow-none"
+            >
+              <RotateCcw className="h-4 w-4" />
+              {t('restartBtn')}
+            </button>
+          )}
           <button
             type="button"
             onClick={onExitToMenu}
-            className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border-2 border-slate-950 bg-rose-500 px-3 py-2 text-xs font-extrabold text-white shadow-[0_3px_0_#0f172a] transition hover:brightness-105 active:translate-y-0.5 active:shadow-none"
+            className="flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border-2 border-slate-950 bg-slate-700 px-3 py-2 text-xs font-extrabold text-white shadow-[0_3px_0_#0f172a] transition hover:bg-slate-600 active:translate-y-0.5 active:shadow-none"
           >
             <Home className="h-4 w-4" />
             {t('menuBtn')}

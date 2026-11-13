@@ -5,6 +5,7 @@ import {
   Coord,
   Faction,
   Move,
+  PIECE_BASE_COLOR_MAP,
   PieceType,
 } from '../types/game';
 
@@ -443,11 +444,17 @@ export function getUnoChessLegalMoves(
     const filtered = standard.filter((m) => {
       const target = board[m.to.row][m.to.col];
       if (target && target.type === 'king') return false;
+      if (m.promotionRequired) {
+        const promoChoices: PieceType[] = ['knight', 'bishop', 'rook', 'queen'];
+        return promoChoices.some((pt) => {
+          const { nextBoard } = applyMoveToBoard(board, m, pt);
+          return !isCheckmate(nextBoard, enemy);
+        });
+      }
       const { nextBoard } = applyMoveToBoard(board, m);
       if (isCheckmate(nextBoard, enemy)) return false;
       return true;
     });
-    // Fallback safety: if literally every move is checkmate (extremely rare), still prevent king capture
     return filtered;
   }
 
@@ -468,6 +475,21 @@ export function getEmptyHomeRows(
     }
   }
   return coords;
+}
+
+export function getWildPlacementSquares(
+  board: (ChessPiece | null)[][],
+  faction: Faction
+): Coord[] {
+  const home = getEmptyHomeRows(board, faction);
+  if (home.length > 0) return home;
+  const anyEmpty: Coord[] = [];
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      if (!board[r][c]) anyEmpty.push({ row: r, col: c });
+    }
+  }
+  return anyEmpty;
 }
 
 /**
@@ -528,12 +550,123 @@ function evaluateBoard(board: (ChessPiece | null)[][], faction: Faction): number
   return score;
 }
 
+export interface ColorDuelResult {
+  triggered: boolean;
+  nextBoard: (ChessPiece | null)[][];
+  nextCapW: ChessPiece[];
+  nextCapB: ChessPiece[];
+  stolenPieceType: PieceType | null;
+  lostPieceType: PieceType | null;
+}
+
+/**
+ * Regla 2: Duelo de Color (Coincidencia en Mesa)
+ * 1. Recompensa para el Primer Jugador (attackerFaction): recibe del rival una pieza mediana
+ *    (priorizando Caballo o Alfil; si no tiene, una Torre) en una casilla libre de sus 2 primeras filas.
+ * 2. Penalización para el Segundo Jugador (defenderFaction): pierde una pieza menor
+ *    (un Peón activo del tablero, que pasa a capturados; si no tiene peones, otro Caballo o Alfil).
+ */
+export function resolveColorDuel(
+  board: (ChessPiece | null)[][],
+  capW: ChessPiece[],
+  capB: ChessPiece[],
+  defenderFaction: Faction
+): ColorDuelResult {
+  const attackerFaction = oppositeFaction(defenderFaction);
+  const workBoard = cloneBoard(board);
+  const nextCapW = [...capW];
+  const nextCapB = [...capB];
+
+  let stolenPieceType: PieceType | null = null;
+  let lostPieceType: PieceType | null = null;
+
+  // Step 1: Find medium piece from defender (Knight/Bishop first, else Rook)
+  const knightsBishops: { row: number; col: number; piece: ChessPiece }[] = [];
+  const rooks: { row: number; col: number; piece: ChessPiece }[] = [];
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const p = workBoard[r][c];
+      if (!p || p.faction !== defenderFaction) continue;
+      if (p.type === 'knight' || p.type === 'bishop') {
+        knightsBishops.push({ row: r, col: c, piece: p });
+      } else if (p.type === 'rook') {
+        rooks.push({ row: r, col: c, piece: p });
+      }
+    }
+  }
+
+  const mediumPool = knightsBishops.length > 0 ? knightsBishops : rooks;
+  const attackerHomeEmpties = getEmptyHomeRows(workBoard, attackerFaction);
+
+  if (mediumPool.length > 0 && attackerHomeEmpties.length > 0) {
+    // Prefer a piece whose removal doesn't needlessly expose defender's king if an alternative exists
+    const safeCandidates = mediumPool.filter((cand) => {
+      const test = cloneBoard(workBoard);
+      test[cand.row][cand.col] = null;
+      return !isInCheck(test, defenderFaction);
+    });
+    const finalMediumPool = safeCandidates.length > 0 ? safeCandidates : mediumPool;
+    const chosen = finalMediumPool[Math.floor(Math.random() * finalMediumPool.length)];
+    const dest = attackerHomeEmpties[Math.floor(Math.random() * attackerHomeEmpties.length)];
+
+    workBoard[chosen.row][chosen.col] = null;
+    workBoard[dest.row][dest.col] = {
+      ...chosen.piece,
+      faction: attackerFaction,
+      hasMoved: true,
+    };
+    stolenPieceType = chosen.piece.type;
+  }
+
+  // Step 2: Defender loses minor piece (Pawn first, else another Knight/Bishop) -> goes to captured zone
+  const pawns: { row: number; col: number; piece: ChessPiece }[] = [];
+  const otherMinors: { row: number; col: number; piece: ChessPiece }[] = [];
+  for (let r = 0; r < 8; r++) {
+    for (let c = 0; c < 8; c++) {
+      const p = workBoard[r][c];
+      if (!p || p.faction !== defenderFaction) continue;
+      if (p.type === 'pawn') pawns.push({ row: r, col: c, piece: p });
+      else if (p.type === 'knight' || p.type === 'bishop') otherMinors.push({ row: r, col: c, piece: p });
+    }
+  }
+
+  const minorPool = pawns.length > 0 ? pawns : otherMinors;
+  if (minorPool.length > 0) {
+    const safeMinors = minorPool.filter((cand) => {
+      const test = cloneBoard(workBoard);
+      test[cand.row][cand.col] = null;
+      return !isInCheck(test, defenderFaction);
+    });
+    const finalMinorPool = safeMinors.length > 0 ? safeMinors : minorPool;
+    const victim = finalMinorPool[Math.floor(Math.random() * finalMinorPool.length)];
+
+    workBoard[victim.row][victim.col] = null;
+    const capturedCopy: ChessPiece = { ...victim.piece, hasMoved: true };
+    if (defenderFaction === 'white') {
+      nextCapW.push(capturedCopy);
+    } else {
+      nextCapB.push(capturedCopy);
+    }
+    lostPieceType = victim.piece.type;
+  }
+
+  return {
+    triggered: true,
+    nextBoard: workBoard,
+    nextCapW,
+    nextCapB,
+    stolenPieceType,
+    lostPieceType,
+  };
+}
+
 export function chooseBotMove(
   board: (ChessPiece | null)[][],
   faction: Faction,
   enPassantTarget: Coord | null,
   movesRemaining: number,
-  botLevel: BotLevel
+  botLevel: BotLevel,
+  syncCardColor: CardColor | null = null
 ): Move | null {
   const moves = getUnoChessLegalMoves(board, faction, enPassantTarget, movesRemaining);
   if (moves.length === 0) return null;
@@ -574,6 +707,14 @@ export function chooseBotMove(
       if (moved && isSquareAttacked(nextBoard, m.to, enemy)) {
         const defended = isSquareAttacked(nextBoard, m.to, faction);
         score -= PIECE_VALUES[moved.type] * (defended ? 0.25 : 0.75);
+      }
+    }
+
+    // Regla 1: Bono de Sincronía de Color (+2 extra moves if first move matches card color)
+    if (syncCardColor) {
+      const origPiece = board[m.from.row][m.from.col];
+      if (origPiece && PIECE_BASE_COLOR_MAP[origPiece.type] === syncCardColor) {
+        score += botLevel >= 4 ? 140 : 60;
       }
     }
 

@@ -5,6 +5,7 @@ export interface TranslationDict {
   modeTitle: string;
   modeBot: string;
   modeLocal: string;
+  modeOnline: string;
   pieceColorTitle: string;
   whitePieces: string;
   blackPieces: string;
@@ -149,6 +150,69 @@ export interface TranslationDict {
   bannerPromoMate: string;
   bannerTeleportSelect: string;
   bannerTimeoutWin: string;
+  bannerWildPlacePiece: string;
+  bannerOnlineTurn: string;
+  bannerResignWin: string;
+  onlineLobbyBtn: string;
+  onlineLobbyTitle: string;
+  onlineBackMenu: string;
+  onlineConnectTitle: string;
+  onlineConnectDesc: string;
+  onlineConnectBtn: string;
+  onlineConnecting: string;
+  onlineAuthError: string;
+  onlineNicknameTitle: string;
+  onlineNicknameDesc: string;
+  onlineNicknamePlaceholder: string;
+  onlineNicknameSave: string;
+  onlineNicknameInvalid: string;
+  onlineEloLabel: string;
+  onlineRecordLabel: string;
+  onlineTabPublic: string;
+  onlineTabMagic: string;
+  onlineCreateChallenge: string;
+  onlinePublishChallenge: string;
+  onlineCancelChallenge: string;
+  onlineWaitingRival: string;
+  onlineOpenChallenges: string;
+  onlineNoChallenges: string;
+  onlineAcceptBtn: string;
+  onlineSideLabel: string;
+  onlineSideRandom: string;
+  onlineMagicTitle: string;
+  onlineMagicDesc: string;
+  onlineMagicGenerate: string;
+  onlineMagicCopy: string;
+  onlineMagicCopied: string;
+  onlineMagicShare: string;
+  onlineMagicWaiting: string;
+  onlineMagicJoinedToast: string;
+  onlineMagicInvalid: string;
+  onlineJoiningMatch: string;
+  onlineResignBtn: string;
+  onlineEloDeltaGain: string;
+  onlineEloDeltaLoss: string;
+  onlineSignOutBtn: string;
+  onlineMatchCancelled: string;
+  onlineLobbyError: string;
+  moveHistoryTitle: string;
+  noMovesYet: string;
+  downloadPgn: string;
+  colorSyncBonusBanner: string;
+  colorSyncBadge: string;
+  colorDuelBanner: string;
+  colorDuelBadge: string;
+  noneWord: string;
+  guideColorBasesTitle: string;
+  guideColorBasesRed: string;
+  guideColorBasesBlue: string;
+  guideColorBasesGreen: string;
+  guideColorBasesYellow: string;
+  guideRule1Title: string;
+  guideRule1Desc: string;
+  guideRule2Title: string;
+  guideRule2Desc: string;
+  sourceCode: string;
 }
 
 const es: TranslationDict = {
@@ -156,6 +220,7 @@ const es: TranslationDict = {
   modeTitle: 'Modo de Juego',
   modeBot: 'Vs. Máquina',
   modeLocal: '2 Jugadores',
+  modeOnline: 'En Línea',
   pieceColorTitle: 'Color de tus Piezas',
   whitePieces: 'Blancas',
   blackPieces: 'Negras',
@@ -217,8 +282,8 @@ const es: TranslationDict = {
   safetyRule2: 'Prioridad +2 y +4: 1.º Caballos o Alfiles, 2.º Peones, 3.º Torre o Dama. Si solo queda el Rey, el +2 otorga 2 movimientos.',
   safetyRule3: 'Jaque tras Cambio de Ronda: Si recibes un bando cuyo Rey está en jaque tras girar el tablero, tu primer movimiento obligatorio debe salvar al Rey.',
   understood: 'Entendido',
-  wildColorTitle: 'Cambio de Color',
-  wildColorDesc: 'Elige el nuevo color activo para mover y teletransportar una pieza.',
+  wildColorTitle: 'Cambio de Color + Pieza',
+  wildColorDesc: 'Cada color representa una pieza de coronación. ¡Elige un color para recibir esa pieza, mover y teletransportar!',
   colorRed: 'Rojo',
   colorBlue: 'Azul',
   colorGreen: 'Verde',
@@ -258,8 +323,8 @@ const es: TranslationDict = {
   cardInterditDesc: 'Realiza 1 movimiento normal, anula el siguiente turno rival y vuelve a robar.',
   cardReversTitle: 'Cambio de Ronda · Giro 180°',
   cardReversDesc: 'El tablero gira 180° y ambos jugadores intercambian de bando.',
-  cardWildTitle: 'Comodín · Movimiento + Teletransporte',
-  cardWildDesc: 'Elige color, realiza 1 movimiento normal y teletransporta una pieza a cualquier casilla vacía.',
+  cardWildTitle: 'Comodín · Pieza + Movimiento + Teletransporte',
+  cardWildDesc: 'Elige un color (Rojo=Dama, Azul=Torre, Verde=Alfil, Amarillo=Caballo), recibe esa pieza, mueve 1 vez y teletransporta una pieza.',
   cardWildDrawTitle: 'Comodín +4 · Ataque o Asalto',
   cardWildDrawDesc: 'Elige Modo Ataque (elimina 4 piezas) o Modo Acción (4 movimientos + Bloqueo).',
   bannerDrawStart: 'Tu turno · Toca el mazo para robar carta',
@@ -300,6 +365,69 @@ const es: TranslationDict = {
   bannerPromoMate: '¡Jaque Mate tras promoción!',
   bannerTeleportSelect: 'Pieza lista · Elige cualquier casilla vacía',
   bannerTimeoutWin: '¡Tiempo agotado! Victoria por reloj.',
+  bannerWildPlacePiece: '¡Comodín! Coloca tu nueva pieza ({{piece}}) en una casilla iluminada',
+  bannerOnlineTurn: 'Partida en línea · Turno de {{name}}',
+  bannerResignWin: '¡Victoria por abandono del rival!',
+  onlineLobbyBtn: 'Entrar al Lobby y Enlace Mágico',
+  onlineLobbyTitle: 'Lobby en Línea',
+  onlineBackMenu: 'Volver',
+  onlineConnectTitle: 'Conecta tu Perfil de Jugador',
+  onlineConnectDesc: 'Inicia sesión para guardar tu apodo único, tu puntuación Elo y jugar con personas reales o por enlace mágico.',
+  onlineConnectBtn: 'Conectar Cuenta',
+  onlineConnecting: 'Conectando...',
+  onlineAuthError: 'No se pudo completar la conexión. Intenta de nuevo.',
+  onlineNicknameTitle: 'Elige tu Apodo',
+  onlineNicknameDesc: 'Tu apodo quedará guardado con tu UID para que otros jugadores te reconozcan en el lobby.',
+  onlineNicknamePlaceholder: 'Ej. GranMaestro99',
+  onlineNicknameSave: 'Guardar Apodo',
+  onlineNicknameInvalid: 'El apodo debe tener entre 2 y 20 caracteres.',
+  onlineEloLabel: '{{elo}} Elo',
+  onlineRecordLabel: '{{wins}}V · {{losses}}D',
+  onlineTabPublic: 'Lobby Público',
+  onlineTabMagic: 'Enlace Mágico',
+  onlineCreateChallenge: 'Crear Desafío Real',
+  onlinePublishChallenge: 'Publicar Desafío',
+  onlineCancelChallenge: 'Cancelar Desafío',
+  onlineWaitingRival: 'Tu desafío está abierto · Esperando a otro jugador real...',
+  onlineOpenChallenges: 'Desafíos Abiertos ({{count}})',
+  onlineNoChallenges: 'No hay desafíos activos en este momento. Publica uno o crea un enlace mágico.',
+  onlineAcceptBtn: 'Aceptar',
+  onlineSideLabel: 'Bando',
+  onlineSideRandom: 'Aleatorio',
+  onlineMagicTitle: 'Jugar con un Amigo (Enlace Mágico)',
+  onlineMagicDesc: 'Genera un enlace privado y compártelo. En cuanto tu amigo entre, recibirás el aviso y comenzará la partida.',
+  onlineMagicGenerate: 'Crear Enlace Mágico',
+  onlineMagicCopy: 'Copiar Enlace',
+  onlineMagicCopied: '¡Enlace copiado!',
+  onlineMagicShare: 'Compartir',
+  onlineMagicWaiting: 'Esperando a que tu amigo abra el enlace mágico...',
+  onlineMagicJoinedToast: '¡{{name}} ({{elo}} Elo) se unió a la partida!',
+  onlineMagicInvalid: 'Este enlace mágico ya expiró o la partida ya comenzó.',
+  onlineJoiningMatch: 'Uniéndose a la partida...',
+  onlineResignBtn: 'Rendirse',
+  onlineEloDeltaGain: '+{{delta}} Elo',
+  onlineEloDeltaLoss: '-{{delta}} Elo',
+  onlineSignOutBtn: 'Cambiar cuenta',
+  onlineMatchCancelled: 'Sala cancelada por el anfitrión.',
+  onlineLobbyError: 'No se pudo completar la acción. El desafío ya no está disponible o hubo un error de red.',
+  moveHistoryTitle: 'Historial',
+  noMovesYet: 'Sin movimientos aún · Roba una carta para comenzar',
+  downloadPgn: 'Descargar PGN',
+  colorSyncBonusBanner: '¡Bono de Sincronía ({{color}})! +2 movimientos extra · Quedan {{count}}',
+  colorSyncBadge: '+2 Sincronía',
+  colorDuelBanner: '¡Duelo de Color ({{color}})! Rival recibe {{stolen}} y pierdes {{lost}}',
+  colorDuelBadge: 'Duelo {{color}}',
+  noneWord: 'ninguna',
+  guideColorBasesTitle: 'Bases Circulares de Color por Pieza',
+  guideColorBasesRed: 'Rojo: Torres y Dama',
+  guideColorBasesBlue: 'Azul: Alfiles y Caballos',
+  guideColorBasesGreen: 'Verde: Peones',
+  guideColorBasesYellow: 'Amarillo: Rey',
+  guideRule1Title: 'Regla 1: Bono de Sincronía de Color (Impulso Inicial)',
+  guideRule1Desc: 'Si en el primer movimiento de tu turno mueves una pieza cuya base circular coincide exactamente con el color de la carta robada, obtienes inmediatamente +2 movimientos extra en ese mismo turno. Si mueves primero otro color, juegas normalmente sin castigo. Los comodines (Wild / +4) no activan este bono.',
+  guideRule2Title: 'Regla 2: Duelo de Color (Coincidencia en Mesa)',
+  guideRule2Desc: 'Si robas una carta del mismo color base que la última carta jugada por tu oponente (los comodines negros rompen la cadena), se dispara un Duelo de Color antes de mover: 1) El rival recibe una pieza mediana tuya (Caballo o Alfil; si no tienes, Torre) en sus dos primeras filas. 2) Además pierdes una pieza menor (Peón activo; si no tienes, otro Caballo o Alfil) que pasa a capturados. Tras el intercambio, juegas tu turno normalmente.',
+  sourceCode: 'Código Fuente',
 };
 
 const en: TranslationDict = {
@@ -307,6 +435,7 @@ const en: TranslationDict = {
   modeTitle: 'Game Mode',
   modeBot: 'Vs. Computer',
   modeLocal: '2 Players',
+  modeOnline: 'Online',
   pieceColorTitle: 'Your Piece Color',
   whitePieces: 'White',
   blackPieces: 'Black',
@@ -368,8 +497,8 @@ const en: TranslationDict = {
   safetyRule2: '+2 & +4 Priority: 1st Knights or Bishops, 2nd Pawns, 3rd Rook or Queen. If only the King remains, +2 grants 2 moves.',
   safetyRule3: 'Check after Reversal: If you receive a side whose King is in check after flipping the board, your first mandatory move must save the King.',
   understood: 'Got it',
-  wildColorTitle: 'Color Change',
-  wildColorDesc: 'Pick the new active color to move and teleport a piece.',
+  wildColorTitle: 'Color Change + Piece',
+  wildColorDesc: 'Each color grants a promotion piece. Choose a color to receive that piece, move, and teleport!',
   colorRed: 'Red',
   colorBlue: 'Blue',
   colorGreen: 'Green',
@@ -409,8 +538,8 @@ const en: TranslationDict = {
   cardInterditDesc: 'Make 1 normal move, skip opponent’s next turn, and draw again.',
   cardReversTitle: 'Reverse · 180° Board Spin',
   cardReversDesc: 'The board rotates 180° and both players permanently swap sides.',
-  cardWildTitle: 'Wild · Move + Teleport',
-  cardWildDesc: 'Pick a color, make 1 normal move, then teleport any piece to an empty square.',
+  cardWildTitle: 'Wild · Piece + Move + Teleport',
+  cardWildDesc: 'Pick a color (Red=Queen, Blue=Rook, Green=Bishop, Yellow=Knight), receive that piece, make 1 move, and teleport a piece.',
   cardWildDrawTitle: 'Wild +4 · Attack or Assault',
   cardWildDrawDesc: 'Choose Attack Mode (remove 4 pieces) or Action Mode (4 moves + Skip).',
   bannerDrawStart: 'Your turn · Tap the deck to draw a card',
@@ -451,6 +580,69 @@ const en: TranslationDict = {
   bannerPromoMate: 'Checkmate on promotion!',
   bannerTeleportSelect: 'Piece ready · Tap any empty square',
   bannerTimeoutWin: 'Time expired! Victory on the clock.',
+  bannerWildPlacePiece: 'Wild! Place your new {{piece}} on a highlighted square',
+  bannerOnlineTurn: 'Online match · {{name}}’s turn',
+  bannerResignWin: 'Victory by opponent resignation!',
+  onlineLobbyBtn: 'Open Lobby & Magic Link',
+  onlineLobbyTitle: 'Online Lobby',
+  onlineBackMenu: 'Back',
+  onlineConnectTitle: 'Connect Your Player Profile',
+  onlineConnectDesc: 'Sign in to save your unique nickname, track your Elo rating, and play real people or friends via magic link.',
+  onlineConnectBtn: 'Connect Account',
+  onlineConnecting: 'Connecting...',
+  onlineAuthError: 'Connection failed. Please try again.',
+  onlineNicknameTitle: 'Choose Your Nickname',
+  onlineNicknameDesc: 'Your nickname is saved to your UID so other players can recognize you in the lobby.',
+  onlineNicknamePlaceholder: 'e.g. GrandMaster99',
+  onlineNicknameSave: 'Save Nickname',
+  onlineNicknameInvalid: 'Nickname must be between 2 and 20 characters.',
+  onlineEloLabel: '{{elo}} Elo',
+  onlineRecordLabel: '{{wins}}W · {{losses}}L',
+  onlineTabPublic: 'Public Lobby',
+  onlineTabMagic: 'Magic Link',
+  onlineCreateChallenge: 'Create Real Challenge',
+  onlinePublishChallenge: 'Post Challenge',
+  onlineCancelChallenge: 'Cancel Challenge',
+  onlineWaitingRival: 'Your challenge is live · Waiting for another real player...',
+  onlineOpenChallenges: 'Open Challenges ({{count}})',
+  onlineNoChallenges: 'No open challenges right now. Post one or create a magic link!',
+  onlineAcceptBtn: 'Accept',
+  onlineSideLabel: 'Side',
+  onlineSideRandom: 'Random',
+  onlineMagicTitle: 'Play with a Friend (Magic Link)',
+  onlineMagicDesc: 'Generate a private invite link and share it. You will be notified as soon as your friend joins.',
+  onlineMagicGenerate: 'Create Magic Link',
+  onlineMagicCopy: 'Copy Link',
+  onlineMagicCopied: 'Link copied!',
+  onlineMagicShare: 'Share',
+  onlineMagicWaiting: 'Waiting for your friend to open the magic link...',
+  onlineMagicJoinedToast: '{{name}} ({{elo}} Elo) joined the match!',
+  onlineMagicInvalid: 'This magic link has expired or already started.',
+  onlineJoiningMatch: 'Joining match...',
+  onlineResignBtn: 'Resign',
+  onlineEloDeltaGain: '+{{delta}} Elo',
+  onlineEloDeltaLoss: '-{{delta}} Elo',
+  onlineSignOutBtn: 'Switch account',
+  onlineMatchCancelled: 'Room cancelled by host.',
+  onlineLobbyError: 'Action could not be completed. The challenge may no longer be available.',
+  moveHistoryTitle: 'History',
+  noMovesYet: 'No moves yet · Draw a card to begin',
+  downloadPgn: 'Download PGN',
+  colorSyncBonusBanner: '{{color}} Sync Bonus! +2 extra moves · {{count}} left',
+  colorSyncBadge: '+2 Sync',
+  colorDuelBanner: 'Color Duel ({{color}})! Rival receives {{stolen}}, you lose {{lost}}',
+  colorDuelBadge: '{{color}} Duel',
+  noneWord: 'none',
+  guideColorBasesTitle: 'Fixed Piece Color Bases',
+  guideColorBasesRed: 'Red: Rooks & Queen',
+  guideColorBasesBlue: 'Blue: Bishops & Knights',
+  guideColorBasesGreen: 'Green: Pawns',
+  guideColorBasesYellow: 'Yellow: King',
+  guideRule1Title: 'Rule 1: Color Sync Bonus (Opening Boost)',
+  guideRule1Desc: 'If your first move of the turn uses a piece whose circular base matches your drawn card’s color, you immediately gain +2 extra moves for this turn. Moving a different color first has no penalty. Wild cards do not trigger this bonus.',
+  guideRule2Title: 'Rule 2: Color Duel (Table Match)',
+  guideRule2Desc: 'If you draw a card with the same base color as the opponent’s previous card (black wilds break the chain), a Color Duel triggers before your moves: 1) Your opponent receives one of your medium pieces (Knight/Bishop, else Rook) placed in their home rows. 2) You also lose a minor piece (Pawn, else another Knight/Bishop) to captured pieces. Afterwards, your turn proceeds normally.',
+  sourceCode: 'Source Code',
 };
 
 // Helper to create localized overrides concisely while preserving 100% key coverage
@@ -463,6 +655,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   en: { translation: en },
   fr: {
     translation: makeDict({
+      sourceCode: 'Code Source',
       tagline: 'Échecs tactiques propulsés par des cartes d’action',
       modeTitle: 'Mode de jeu',
       modeBot: 'Vs. Ordinateur',
@@ -536,6 +729,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   pt: {
     translation: makeDict({
+      sourceCode: 'Código-Fonte',
       tagline: 'Xadrez tático impulsionado por cartas de ação',
       modeTitle: 'Modo de Jogo',
       modeBot: 'Vs. Máquina',
@@ -607,6 +801,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   de: {
     translation: makeDict({
+      sourceCode: 'Quellcode',
       tagline: 'Taktisches Schach mit Aktionskarten',
       modeTitle: 'Spielmodus',
       modeBot: 'Gegen KI',
@@ -665,6 +860,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   it: {
     translation: makeDict({
+      sourceCode: 'Codice Sorgente',
       tagline: 'Scacchi tattici guidati da carte azione',
       modeTitle: 'Modalità di Gioco',
       modeBot: 'Vs. Computer',
@@ -723,6 +919,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   nl: {
     translation: makeDict({
+      sourceCode: 'Broncode',
       tagline: 'Tactisch schaken aangedreven door actiekaarten',
       modeTitle: 'Spelmodus',
       modeBot: 'Tegen AI',
@@ -763,6 +960,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   pl: {
     translation: makeDict({
+      sourceCode: 'Kod Źródłowy',
       tagline: 'Taktyczne szachy napędzane kartami akcji',
       modeTitle: 'Tryb Gry',
       modeBot: 'Vs. Komputer',
@@ -803,6 +1001,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   ru: {
     translation: makeDict({
+      sourceCode: 'Исходный код',
       tagline: 'Тактические шахматы с картами действий',
       modeTitle: 'Режим игры',
       modeBot: 'Против ИИ',
@@ -861,6 +1060,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   uk: {
     translation: makeDict({
+      sourceCode: 'Вихідний код',
       tagline: 'Тактичні шахи з картками дій',
       modeTitle: 'Режим гри',
       modeBot: 'Проти ШІ',
@@ -901,6 +1101,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   tr: {
     translation: makeDict({
+      sourceCode: 'Kaynak Kodu',
       tagline: 'Aksiyon kartlarıyla güçlendirilmiş taktik satranç',
       modeTitle: 'Oyun Modu',
       modeBot: 'Yapay Zekaya Karşı',
@@ -941,6 +1142,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   ar: {
     translation: makeDict({
+      sourceCode: 'الكود المصدري',
       tagline: 'شطرنج تكتيكي مدعوم ببطاقات الحركة',
       modeTitle: 'وضع اللعب',
       modeBot: 'ضد الذكاء الاصطناعي',
@@ -991,6 +1193,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   hi: {
     translation: makeDict({
+      sourceCode: 'स्रोत कोड',
       tagline: 'एक्शन कार्ड्स से संचालित रणनीतिक शतरंज',
       modeTitle: 'खेल मोड',
       modeBot: 'बॉट के विरुद्ध',
@@ -1031,6 +1234,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   bn: {
     translation: makeDict({
+      sourceCode: 'সোর্স কোড',
       tagline: 'অ্যাকশন কার্ড দ্বারা পরিচালিত কৌশলগত দাবা',
       modeTitle: 'খেলার ধরন',
       modeBot: 'AI-এর বিরুদ্ধে',
@@ -1067,6 +1271,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   zh: {
     translation: makeDict({
+      sourceCode: '源代码',
       tagline: '行动卡牌驱动的战术国际象棋',
       modeTitle: '游戏模式',
       modeBot: '对战电脑 AI',
@@ -1125,6 +1330,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   ja: {
     translation: makeDict({
+      sourceCode: 'ソースコード',
       tagline: 'アクションカードで戦う戦略チェス',
       modeTitle: 'ゲームモード',
       modeBot: 'AI と対戦',
@@ -1177,6 +1383,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   ko: {
     translation: makeDict({
+      sourceCode: '소스 코드',
       tagline: '액션 카드로 즐기는 전략 체스',
       modeTitle: '게임 모드',
       modeBot: 'AI 대전',
@@ -1217,6 +1424,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   vi: {
     translation: makeDict({
+      sourceCode: 'Mã Nguồn',
       tagline: 'Cờ vua chiến thuật kết hợp thẻ bài hành động',
       modeTitle: 'Chế độ chơi',
       modeBot: 'Đấu với Máy',
@@ -1253,6 +1461,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   th: {
     translation: makeDict({
+      sourceCode: 'ซอร์สโค้ด',
       tagline: 'หมากรุกเชิงกลยุทธ์ที่ขับเคลื่อนด้วยการ์ดแอคชั่น',
       modeTitle: 'โหมดเกม',
       modeBot: 'แข่งกับ AI',
@@ -1289,6 +1498,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   id: {
     translation: makeDict({
+      sourceCode: 'Kode Sumber',
       tagline: 'Catur taktis yang digerakkan oleh kartu aksi',
       modeTitle: 'Mode Permainan',
       modeBot: 'Lawan AI',
@@ -1325,6 +1535,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   ms: {
     translation: makeDict({
+      sourceCode: 'Kod Sumber',
       tagline: 'Catur taktikal dipacu oleh kad aksi',
       modeTitle: 'Mod Permainan',
       modeBot: 'Lawan AI',
@@ -1361,6 +1572,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   sv: {
     translation: makeDict({
+      sourceCode: 'Källkod',
       tagline: 'Taktiskt schack drivet av handlingskort',
       modeTitle: 'Spelläge',
       modeBot: 'Mot Dator',
@@ -1397,6 +1609,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   no: {
     translation: makeDict({
+      sourceCode: 'Kildekode',
       tagline: 'Taktisk sjakk drevet av handlingskort',
       modeTitle: 'Spillmodus',
       modeBot: 'Mot AI',
@@ -1433,6 +1646,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   da: {
     translation: makeDict({
+      sourceCode: 'Kildekode',
       tagline: 'Taktisk skak drevet af handlingskort',
       modeTitle: 'Spiltilstand',
       modeBot: 'Mod AI',
@@ -1469,6 +1683,7 @@ export const RESOURCES: Record<LanguageCode, { translation: TranslationDict }> =
   },
   el: {
     translation: makeDict({
+      sourceCode: 'Πηγαίος Κώδικας',
       tagline: 'Τακτικό σκάκι με κάρτες δράσης',
       modeTitle: 'Λειτουργία Παιχνιδιού',
       modeBot: 'Εναντίον AI',

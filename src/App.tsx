@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Ban, Clock, Layers, Pause, ShieldAlert, Sparkles, Timer } from 'lucide-react';
+import { User } from 'firebase/auth';
+import { Ban, Clock, Layers, Pause, ShieldAlert, Sparkles, Timer, Trophy } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   BotLevel,
@@ -13,11 +14,16 @@ import {
   GamePhase,
   LocalPlayStyle,
   Move,
+  MoveHistoryEntry,
+  OnlineMatchDoc,
+  PIECE_BASE_COLOR_MAP,
   PendingPromotion,
   PieceType,
   PlayerId,
+  PlayerProfile,
   TIME_CONTROL_PRESETS,
   TimeControlPreset,
+  WILD_COLOR_PIECE_MAP,
 } from './types/game';
 import {
   applyMoveToBoard,
@@ -30,17 +36,32 @@ import {
   getEmptyHomeRows,
   getHighestPriorityEnemyCoords,
   getUnoChessLegalMoves,
+  getWildPlacementSquares,
   isCheckmate,
   isInCheck,
   oppositeFaction,
+  resolveColorDuel,
 } from './engine/chess';
 import { createDeck, shuffleCards } from './engine/deck';
+import { buildPGN, coordToAlgebraic, downloadPGNFile, formatMoveToSAN } from './engine/pgn';
 import { sound } from './utils/audio';
+import {
+  applyMatchEloToMyProfile,
+  calculateEloDelta,
+  flattenBoard,
+  pushMatchUpdate,
+  subscribeAuth,
+  subscribeMatch,
+  subscribePlayerProfile,
+  unflattenBoard,
+} from './services/onlineService';
 import { OrientationLock } from './components/OrientationLock';
 import { StartScreen } from './components/StartScreen';
+import { OnlineLobbyView } from './components/OnlineLobbyView';
 import { ChessBoard } from './components/ChessBoard';
 import { LayeredCard } from './components/LayeredCard';
 import { ChessPieceGraphic } from './components/ChessPieceGraphic';
+import { MoveHistoryBar } from './components/MoveHistoryBar';
 import { PauseModal } from './components/PauseModal';
 import { CardGuideModal } from './components/CardGuideModal';
 import {
@@ -62,6 +83,30 @@ export default function App() {
   const [playerColor, setPlayerColor] = useState<Faction>('white');
   const [localPlayStyle, setLocalPlayStyle] = useState<LocalPlayStyle>('tabletop');
   const [timeControl, setTimeControl] = useState<TimeControlPreset>(TIME_CONTROL_PRESETS[0]);
+
+  // Online auth, profile, lobby, & live match state
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [myProfile, setMyProfile] = useState<PlayerProfile | null>(null);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [showOnlineLobby, setShowOnlineLobby] = useState(false);
+  const [pendingJoinMatchId, setPendingJoinMatchId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const params = new URLSearchParams(window.location.search);
+    const joinId = params.get('join');
+    return joinId && /^[a-zA-Z0-9_-]{3,128}$/.test(joinId) ? joinId : null;
+  });
+  const [onlineMatchId, setOnlineMatchId] = useState<string | null>(null);
+  const [onlineMatch, setOnlineMatch] = useState<OnlineMatchDoc | null>(null);
+  const [joinToastMsg, setJoinToastMsg] = useState<string | null>(null);
+  const [onlineEloResult, setOnlineEloResult] = useState<{
+    delta: number;
+    didWin: boolean;
+  } | null>(null);
+  const appliedEloMatchesRef = useRef<Set<string>>(new Set());
+  const myProfileRef = useRef<PlayerProfile | null>(null);
+  myProfileRef.current = myProfile;
+  const lastSeenDuelTextRef = useRef<string>('');
 
   // Core game state machine
   const [phase, setPhase] = useState<GamePhase>('TITLE_MENU');
@@ -91,6 +136,7 @@ export default function App() {
   const [movesRemaining, setMovesRemaining] = useState(0);
   const [skipOpponentTurns, setSkipOpponentTurns] = useState(0);
   const [wildTeleportPending, setWildTeleportPending] = useState(false);
+  const [pendingWildPieceType, setPendingWildPieceType] = useState<PieceType | null>(null);
   const [selectedCoord, setSelectedCoord] = useState<Coord | null>(null);
 
   // +2 & +4 interactive states
@@ -103,6 +149,13 @@ export default function App() {
   const [pendingPromotion, setPendingPromotion] = useState<PendingPromotion | null>(null);
   const [promotionSavedMovesAfter, setPromotionSavedMovesAfter] = useState(0);
 
+  // Color Sync (Regla 1), Color Duel (Regla 2), & Move History / PGN
+  const [lastChainColor, setLastChainColor] = useState<CardColor | ''>('');
+  const [lastChainBy, setLastChainBy] = useState<PlayerId | ''>('');
+  const [isFirstMoveOfTurn, setIsFirstMoveOfTurn] = useState(true);
+  const [moveHistory, setMoveHistory] = useState<MoveHistoryEntry[]>([]);
+  const [duelToastMsg, setDuelToastMsg] = useState<string | null>(null);
+
   // Status, Timer, Clocks, Winner
   const [bannerMsg, setBannerMsg] = useState<string>(() => t('bannerDrawStart'));
   const [turnsPlayed, setTurnsPlayed] = useState(1);
@@ -111,24 +164,97 @@ export default function App() {
   const [p2TimeMs, setP2TimeMs] = useState(0);
   const [winnerName, setWinnerName] = useState<string | null>(null);
   const [gameOverReason, setGameOverReason] = useState('');
+  const [finalResultToken, setFinalResultToken] = useState<'1-0' | '0-1' | '1/2-1/2' | '*'>('*');
 
   // Audio UI state synced from Web Audio engine
   const [audioState, setAudioState] = useState(() => sound.getState());
   const syncAudioState = () => setAudioState({ ...sound.getState() });
+
+  // Open online lobby automatically when arriving via a ?join=<matchId> magic link
+  useEffect(() => {
+    if (pendingJoinMatchId) {
+      setMode('online');
+      setShowOnlineLobby(true);
+    }
+  }, [pendingJoinMatchId]);
+
+  // Subscribe to Auth state
+  useEffect(() => {
+    const unsub = subscribeAuth((user) => {
+      setAuthUser(user);
+      setAuthReady(true);
+      if (!user) {
+        setMyProfile(null);
+        setProfileLoading(false);
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  // Subscribe to authenticated player's UID profile (nickname + Elo)
+  useEffect(() => {
+    if (!authUser) return;
+    setProfileLoading(true);
+    const unsub = subscribePlayerProfile(authUser.uid, (prof) => {
+      setMyProfile(prof);
+      setProfileLoading(false);
+    });
+    return () => unsub();
+  }, [authUser]);
 
   // Derived factions & labels
   const p2Faction = oppositeFaction(p1Faction);
   const activeFaction: Faction = activePlayer === 'p1' ? p1Faction : p2Faction;
   const enemyFaction: Faction = oppositeFaction(activeFaction);
 
+  const myOnlineRole: PlayerId = useMemo(() => {
+    if (!onlineMatch || !authUser) return 'p1';
+    return onlineMatch.p1Uid === authUser.uid ? 'p1' : 'p2';
+  }, [authUser, onlineMatch]);
+
   const playerLabel = useCallback(
     (pid: PlayerId) => {
+      if (mode === 'online' && onlineMatch) {
+        return pid === 'p1' ? onlineMatch.hostNickname : onlineMatch.guestNickname;
+      }
       if (mode === 'bot') {
         return pid === 'p1' ? t('you') : t('botAi');
       }
       return pid === 'p1' ? t('player1') : t('player2');
     },
-    [mode, t]
+    [mode, onlineMatch, t]
+  );
+
+  const playerUidForId = useCallback(
+    (pid: PlayerId) => {
+      if (!onlineMatch) return '';
+      return pid === 'p1' ? onlineMatch.p1Uid : onlineMatch.p2Uid;
+    },
+    [onlineMatch]
+  );
+
+  const playerEloForId = useCallback(
+    (pid: PlayerId): number | null => {
+      if (mode !== 'online' || !onlineMatch) return null;
+      return pid === 'p1' ? onlineMatch.hostElo : onlineMatch.guestElo;
+    },
+    [mode, onlineMatch]
+  );
+
+  const colorLabel = useCallback(
+    (c: CardColor) => {
+      switch (c) {
+        case 'red':
+          return t('colorRed');
+        case 'blue':
+          return t('colorBlue');
+        case 'green':
+          return t('colorGreen');
+        case 'yellow':
+          return t('colorYellow');
+      }
+    },
+    [t]
   );
 
   const pieceLabel = useCallback(
@@ -195,7 +321,10 @@ export default function App() {
     [t]
   );
 
-  const isHumanTurn = mode === 'local' || activePlayer === 'p1';
+  const isHumanTurn =
+    mode === 'online'
+      ? Boolean(onlineMatch && onlineMatch.status === 'active' && activePlayer === myOnlineRole)
+      : mode === 'local' || activePlayer === 'p1';
 
   const checkedFaction: Faction | null = useMemo(() => {
     if (isInCheck(board, 'white')) return 'white';
@@ -208,20 +337,195 @@ export default function App() {
     [activeFaction, capturedWhitePieces, capturedBlackPieces]
   );
 
+  // Sync incoming real-time online match snapshots
+  useEffect(() => {
+    if (mode !== 'online' || !onlineMatchId) return;
+
+    const unsub = subscribeMatch(onlineMatchId, (match) => {
+      if (!match) return;
+      setOnlineMatch(match);
+
+      if (match.status === 'waiting') {
+        setBannerMsg(t('onlineMagicWaiting'));
+        return;
+      }
+
+      const role: PlayerId = authUser && match.p1Uid === authUser.uid ? 'p1' : 'p2';
+      const myFac: Faction = role === 'p1' ? match.p1Faction : oppositeFaction(match.p1Faction);
+
+      const nextBoard = unflattenBoard(match.boardFlat);
+      setBoard(nextBoard);
+      setCapturedWhitePieces(match.capturedWhitePieces);
+      setCapturedBlackPieces(match.capturedBlackPieces);
+      setExiledPieces(match.exiledPieces);
+      setEnPassantTarget(match.enPassantTarget ?? null);
+      setP1Faction(match.p1Faction);
+      setActivePlayer(match.activePlayer);
+      setBoardFlipped(myFac === 'black');
+      setDrawPile(match.drawPile);
+      setDiscardPile(match.discardPile);
+      setCurrentCard(match.currentCard ?? null);
+      setCardFaceDown(match.cardFaceDown);
+      setMovesRemaining(match.movesRemaining);
+      setSkipOpponentTurns(match.skipOpponentTurns);
+      setWildTeleportPending(match.wildTeleportPending);
+      setPlus2Remaining(match.plus2Remaining);
+      setPlus4Remaining(match.plus4Remaining);
+      setPendingWildPieceType(
+        match.pendingWildPieceType ? (match.pendingWildPieceType as PieceType) : null
+      );
+      setPendingPromotion(match.pendingPromotion ?? null);
+      setLastChainColor(match.lastChainColor ?? '');
+      setLastChainBy(match.lastChainBy ?? '');
+      setIsFirstMoveOfTurn(
+        match.isFirstMoveOfTurn !== undefined ? match.isFirstMoveOfTurn : true
+      );
+      setMoveHistory(match.moveHistory ?? []);
+      setTurnsPlayed(match.turnsPlayed);
+      setP1TimeMs(match.p1TimeMs);
+      setP2TimeMs(match.p2TimeMs);
+
+      if (match.lastDuelText && match.lastDuelText !== lastSeenDuelTextRef.current) {
+        lastSeenDuelTextRef.current = match.lastDuelText;
+        setDuelToastMsg(match.lastDuelText);
+        window.setTimeout(() => setDuelToastMsg(null), 5000);
+      }
+
+      setTimeControl({
+        id: match.timeControlId,
+        category:
+          match.minutes === 0
+            ? 'unlimited'
+            : match.minutes <= 2
+            ? 'bullet'
+            : match.minutes <= 5
+            ? 'blitz'
+            : match.minutes <= 15
+            ? 'rapid'
+            : 'classical',
+        label: match.timeControlLabel,
+        minutes: match.minutes,
+        increment: match.increment,
+      });
+
+      if (match.phase === 'REVERSING') {
+        setIsSpinning(true);
+      } else {
+        setIsSpinning(false);
+      }
+
+      if (match.bannerKey) {
+        const params = { ...(match.bannerParams || {}) };
+        if (match.bannerKey === 'bannerOnlineTurn') {
+          const turnName =
+            match.activePlayer === 'p1' ? match.hostNickname : match.guestNickname;
+          params.name = turnName;
+        }
+        setBannerMsg(t(match.bannerKey, params));
+      }
+
+      if (match.status === 'finished') {
+        const winnerIsP1 = match.winnerUid === match.p1Uid;
+        const wName = match.winnerUid
+          ? winnerIsP1
+            ? match.hostNickname
+            : match.guestNickname
+          : null;
+        setWinnerName(wName);
+        if (match.winnerUid) {
+          const winnerFac = winnerIsP1
+            ? match.p1Faction
+            : oppositeFaction(match.p1Faction);
+          setFinalResultToken(winnerFac === 'white' ? '1-0' : '0-1');
+        } else {
+          setFinalResultToken('*');
+        }
+        setGameOverReason(match.winReasonKey ? t(match.winReasonKey) : '');
+        setPhase('GAME_OVER');
+
+        if (authUser && match.winnerUid) {
+          const didWin = match.winnerUid === authUser.uid;
+          setOnlineEloResult({ delta: match.eloDelta, didWin });
+          const prof = myProfileRef.current;
+          if (
+            prof &&
+            match.eloDelta > 0 &&
+            !appliedEloMatchesRef.current.has(match.id)
+          ) {
+            appliedEloMatchesRef.current.add(match.id);
+            void applyMatchEloToMyProfile(prof, didWin, match.eloDelta);
+          }
+        }
+      } else {
+        setPhase(match.phase);
+      }
+    });
+
+    return () => unsub();
+  }, [authUser, mode, onlineMatchId, t]);
+
+  // Helper to push authoritative online updates when playing online
+  const pushOnline = useCallback(
+    (patch: Parameters<typeof pushMatchUpdate>[1]) => {
+      if (mode !== 'online' || !onlineMatch) return;
+      void pushMatchUpdate(onlineMatch.id, {
+        ...patch,
+        stateVersion: (onlineMatch.stateVersion || 1) + 1,
+      });
+    },
+    [mode, onlineMatch]
+  );
+
+  // Enter an online match from Lobby or Magic Link
+  const handleEnterOnlineMatch = useCallback((matchId: string, notice?: string) => {
+    sound.unlock();
+    sound.startMusic();
+    syncAudioState();
+    lastSeenDuelTextRef.current = '';
+    setMode('online');
+    setShowOnlineLobby(false);
+    setOnlineMatchId(matchId);
+    setOnlineEloResult(null);
+    setMoveHistory([]);
+    setLastChainColor('');
+    setLastChainBy('');
+    setIsFirstMoveOfTurn(true);
+    setDuelToastMsg(null);
+    setFinalResultToken('*');
+    setSelectedCoord(null);
+    setSelectedRecoverId(null);
+    setSelectedStealCoord(null);
+    setElapsedSeconds(0);
+    setIsPaused(false);
+    setPhase('DRAW_PHASE');
+    if (notice) {
+      setJoinToastMsg(notice);
+      window.setTimeout(() => setJoinToastMsg(null), 5000);
+    }
+  }, []);
+
   // Elapsed timer
   useEffect(() => {
-    if (phase === 'TITLE_MENU' || phase === 'GAME_OVER' || isPaused) return;
+    if (
+      phase === 'TITLE_MENU' ||
+      phase === 'GAME_OVER' ||
+      showOnlineLobby ||
+      (isPaused && mode !== 'online')
+    ) {
+      return;
+    }
     const id = window.setInterval(() => {
       setElapsedSeconds((s) => s + 1);
     }, 1000);
     return () => clearInterval(id);
-  }, [phase, isPaused]);
+  }, [isPaused, mode, phase, showOnlineLobby]);
 
   // Dual Chess Clocks (Bullet -> Classical)
   useEffect(() => {
     if (
       timeControl.minutes <= 0 ||
-      isPaused ||
+      showOnlineLobby ||
+      (isPaused && mode !== 'online') ||
       phase === 'TITLE_MENU' ||
       phase === 'GAME_OVER' ||
       phase === 'REVERSING' ||
@@ -245,23 +549,64 @@ export default function App() {
     }, 100);
 
     return () => clearInterval(id);
-  }, [activePlayer, isPaused, phase, timeControl.minutes]);
+  }, [activePlayer, isPaused, mode, phase, showOnlineLobby, timeControl.minutes]);
 
   // Detect clock flag / timeout victory
   useEffect(() => {
-    if (timeControl.minutes <= 0 || phase === 'TITLE_MENU' || phase === 'GAME_OVER') return;
-    if (p1TimeMs <= 0) {
+    if (
+      timeControl.minutes <= 0 ||
+      showOnlineLobby ||
+      phase === 'TITLE_MENU' ||
+      phase === 'GAME_OVER'
+    ) {
+      return;
+    }
+
+    if (p1TimeMs <= 0 || p2TimeMs <= 0) {
+      const winnerPid: PlayerId = p1TimeMs <= 0 ? 'p2' : 'p1';
+      if (mode === 'online' && onlineMatch && authUser) {
+        if (onlineMatch.status !== 'active') return;
+        const winnerUid = playerUidForId(winnerPid);
+        const winnerElo = winnerPid === 'p1' ? onlineMatch.hostElo : onlineMatch.guestElo;
+        const loserElo = winnerPid === 'p1' ? onlineMatch.guestElo : onlineMatch.hostElo;
+        const delta = calculateEloDelta(winnerElo, loserElo);
+        // Let the flagged player (or host) commit timeout cleanly
+        if (authUser.uid === playerUidForId(activePlayer)) {
+          pushOnline({
+            status: 'finished',
+            phase: 'GAME_OVER',
+            winnerUid,
+            winReasonKey: 'bannerTimeoutWin',
+            eloDelta: delta,
+            p1TimeMs: Math.round(p1TimeMs),
+            p2TimeMs: Math.round(p2TimeMs),
+          });
+        }
+        return;
+      }
+
       sound.playCheckmate();
-      setWinnerName(playerLabel('p2'));
-      setGameOverReason(t('bannerTimeoutWin'));
-      setPhase('GAME_OVER');
-    } else if (p2TimeMs <= 0) {
-      sound.playCheckmate();
-      setWinnerName(playerLabel('p1'));
+      const winnerFac = winnerPid === 'p1' ? p1Faction : oppositeFaction(p1Faction);
+      setFinalResultToken(winnerFac === 'white' ? '1-0' : '0-1');
+      setWinnerName(playerLabel(winnerPid));
       setGameOverReason(t('bannerTimeoutWin'));
       setPhase('GAME_OVER');
     }
-  }, [p1TimeMs, p2TimeMs, phase, playerLabel, t, timeControl.minutes]);
+  }, [
+    activePlayer,
+    authUser,
+    mode,
+    onlineMatch,
+    p1TimeMs,
+    p2TimeMs,
+    phase,
+    playerLabel,
+    playerUidForId,
+    pushOnline,
+    showOnlineLobby,
+    t,
+    timeControl.minutes,
+  ]);
 
   const formatTime = (secs: number) => {
     const m = Math.floor(secs / 60);
@@ -291,12 +636,8 @@ export default function App() {
 
     // White always moves first in chess
     const startingPlayer: PlayerId = playerColor === 'white' ? 'p1' : 'p2';
-    // In 1P or 2P tabletop: place Player 1's chosen color at the bottom initially
-    // In 2P pass-and-play: active player (White on move 1) sits at the bottom
     const initialFlipped =
-      mode === 'local' && localPlayStyle === 'pass'
-        ? false
-        : playerColor === 'black';
+      mode === 'local' && localPlayStyle === 'pass' ? false : playerColor === 'black';
     const initialClockMs = timeControl.minutes * 60 * 1000;
 
     setBoard(createInitialBoard());
@@ -317,6 +658,7 @@ export default function App() {
     setMovesRemaining(0);
     setSkipOpponentTurns(0);
     setWildTeleportPending(false);
+    setPendingWildPieceType(null);
     setSelectedCoord(null);
     setPlus2Remaining(0);
     setSelectedRecoverId(null);
@@ -330,6 +672,13 @@ export default function App() {
     setP2TimeMs(initialClockMs);
     setWinnerName(null);
     setGameOverReason('');
+    setFinalResultToken('*');
+    setOnlineEloResult(null);
+    setLastChainColor('');
+    setLastChainBy('');
+    setIsFirstMoveOfTurn(true);
+    setMoveHistory([]);
+    setDuelToastMsg(null);
     setIsPaused(false);
     setPhase('DRAW_PHASE');
     setBannerMsg(
@@ -339,90 +688,307 @@ export default function App() {
     );
   }, [localPlayStyle, mode, playerColor, playerLabel, t, timeControl.minutes]);
 
+  const finishWithWin = useCallback(
+    (
+      winnerPid: PlayerId,
+      reasonKey: string,
+      latestBoard: (ChessPiece | null)[][],
+      extraPatch?: Partial<OnlineMatchDoc>
+    ) => {
+      sound.playCheckmate();
+      const winnerFac = winnerPid === 'p1' ? p1Faction : oppositeFaction(p1Faction);
+      const resTok: '1-0' | '0-1' = winnerFac === 'white' ? '1-0' : '0-1';
+      setFinalResultToken(resTok);
+
+      if (mode === 'online' && onlineMatch) {
+        const winnerUid = playerUidForId(winnerPid);
+        const winnerElo = winnerPid === 'p1' ? onlineMatch.hostElo : onlineMatch.guestElo;
+        const loserElo = winnerPid === 'p1' ? onlineMatch.guestElo : onlineMatch.hostElo;
+        const delta = calculateEloDelta(winnerElo, loserElo);
+        pushOnline({
+          ...extraPatch,
+          boardFlat: flattenBoard(latestBoard),
+          status: 'finished',
+          phase: 'GAME_OVER',
+          winnerUid,
+          winReasonKey: reasonKey,
+          eloDelta: delta,
+          p1TimeMs: Math.round(p1TimeMs),
+          p2TimeMs: Math.round(p2TimeMs),
+        });
+        return;
+      }
+
+      setWinnerName(playerLabel(winnerPid));
+      setGameOverReason(t(reasonKey));
+      setPhase('GAME_OVER');
+    },
+    [mode, onlineMatch, p1Faction, p1TimeMs, p2TimeMs, playerLabel, playerUidForId, pushOnline, t]
+  );
+
+  const handleDownloadPgn = useCallback(() => {
+    sound.playClick();
+    const whitePid: PlayerId = p1Faction === 'white' ? 'p1' : 'p2';
+    const blackPid: PlayerId = p1Faction === 'black' ? 'p1' : 'p2';
+    const pgn = buildPGN({
+      entries: moveHistory,
+      whiteName: playerLabel(whitePid),
+      blackName: playerLabel(blackPid),
+      result: finalResultToken,
+      timeControlLabel: timeControl.label,
+    });
+    downloadPGNFile(pgn);
+  }, [finalResultToken, moveHistory, p1Faction, playerLabel, timeControl.label]);
+
   const endTurn = useCallback(
-    (latestBoard: (ChessPiece | null)[][], lastCard: Card | null) => {
+    (
+      latestBoard: (ChessPiece | null)[][],
+      lastCard: Card | null,
+      overrideDrawPile?: Card[],
+      overrideDiscardPile?: Card[],
+      overrideCapW?: ChessPiece[],
+      overrideCapB?: ChessPiece[],
+      overrideExiled?: ChessPiece[],
+      overrideEP?: Coord | null,
+      overrideHistory?: MoveHistoryEntry[],
+      overrideChain?: { color: CardColor | ''; by: PlayerId | '' }
+    ) => {
+      const latestHistory = overrideHistory ?? moveHistory;
+      const isLastCardWild =
+        lastCard?.value === 'wild' || lastCard?.value === 'wild-draw';
+      const nextChainColor: CardColor | '' = overrideChain
+        ? overrideChain.color
+        : lastCard && !isLastCardWild
+        ? lastCard.color
+        : lastCard && isLastCardWild
+        ? ''
+        : lastChainColor;
+      const nextChainBy: PlayerId | '' = overrideChain
+        ? overrideChain.by
+        : lastCard && !isLastCardWild
+        ? activePlayer
+        : lastCard && isLastCardWild
+        ? ''
+        : lastChainBy;
+
       const enemy = oppositeFaction(activeFaction);
       const enemyKingExists = latestBoard.some((r) =>
         r.some((p) => p && p.faction === enemy && p.type === 'king')
       );
 
       if (!enemyKingExists || isCheckmate(latestBoard, enemy)) {
-        sound.playCheckmate();
-        setWinnerName(playerLabel(activePlayer));
-        setGameOverReason(t('bannerMateWin'));
-        setPhase('GAME_OVER');
+        finishWithWin(
+          activePlayer,
+          !enemyKingExists ? 'bannerKingCaptured' : 'bannerMateWin',
+          latestBoard,
+          { moveHistory: latestHistory }
+        );
         return;
       }
 
-      if (lastCard) {
-        setDiscardPile((prev) => [...prev, lastCard]);
-      }
+      const nextDiscard = lastCard
+        ? [...(overrideDiscardPile ?? discardPile), lastCard]
+        : [...(overrideDiscardPile ?? discardPile)];
+      setDiscardPile(nextDiscard);
 
+      let nextP1Ms = p1TimeMs;
+      let nextP2Ms = p2TimeMs;
       if (timeControl.minutes > 0 && timeControl.increment > 0) {
         const incMs = timeControl.increment * 1000;
         if (activePlayer === 'p1') {
-          setP1TimeMs((prev) => prev + incMs);
+          nextP1Ms = p1TimeMs + incMs;
+          setP1TimeMs(nextP1Ms);
         } else {
-          setP2TimeMs((prev) => prev + incMs);
+          nextP2Ms = p2TimeMs + incMs;
+          setP2TimeMs(nextP2Ms);
         }
       }
 
       setSelectedCoord(null);
       setWildTeleportPending(false);
+      setPendingWildPieceType(null);
+      setPendingPromotion(null);
       setCurrentCard(null);
       setCardFaceDown(true);
+      setIsFirstMoveOfTurn(true);
+      setLastChainColor(nextChainColor);
+      setLastChainBy(nextChainBy);
 
       if (skipOpponentTurns > 0) {
-        setSkipOpponentTurns((s) => s - 1);
+        const nextSkip = skipOpponentTurns - 1;
+        setSkipOpponentTurns(nextSkip);
         setPhase('DRAW_PHASE');
         setBannerMsg(t('bannerBlockedExtra', { name: playerLabel(activePlayer) }));
+
+        if (mode === 'online') {
+          pushOnline({
+            boardFlat: flattenBoard(latestBoard),
+            drawPile: overrideDrawPile ?? drawPile,
+            discardPile: nextDiscard,
+            capturedWhitePieces: overrideCapW ?? capturedWhitePieces,
+            capturedBlackPieces: overrideCapB ?? capturedBlackPieces,
+            exiledPieces: overrideExiled ?? exiledPieces,
+            enPassantTarget: overrideEP !== undefined ? overrideEP : enPassantTarget,
+            currentCard: null,
+            cardFaceDown: true,
+            phase: 'DRAW_PHASE',
+            movesRemaining: 0,
+            skipOpponentTurns: nextSkip,
+            wildTeleportPending: false,
+            plus2Remaining: 0,
+            plus4Remaining: 0,
+            pendingWildPieceType: '',
+            pendingPromotion: null,
+            p1TimeMs: Math.round(nextP1Ms),
+            p2TimeMs: Math.round(nextP2Ms),
+            bannerKey: 'bannerBlockedExtra',
+            bannerParams: { name: playerLabel(activePlayer) },
+            lastChainColor: nextChainColor,
+            lastChainBy: nextChainBy,
+            isFirstMoveOfTurn: true,
+            moveHistory: latestHistory,
+          });
+        }
       } else {
         const nextPlayer: PlayerId = activePlayer === 'p1' ? 'p2' : 'p1';
         const nextFac = nextPlayer === 'p1' ? p1Faction : oppositeFaction(p1Faction);
+        const nextTurns = turnsPlayed + 1;
         setActivePlayer(nextPlayer);
-        setTurnsPlayed((tp) => tp + 1);
+        setTurnsPlayed(nextTurns);
         setPhase('DRAW_PHASE');
 
-        // In 2-player pass-device mode, flip board so next player's pieces are at bottom
         if (mode === 'local' && localPlayStyle === 'pass') {
           setBoardFlipped(nextFac === 'black');
         }
 
-        if (isInCheck(latestBoard, nextFac)) {
-          setBannerMsg(t('bannerCheckTurn', { name: playerLabel(nextPlayer) }));
-        } else {
-          setBannerMsg(t('bannerTurnOf', { name: playerLabel(nextPlayer) }));
+        const inChk = isInCheck(latestBoard, nextFac);
+        const bannerKey = inChk ? 'bannerCheckTurn' : 'bannerTurnOf';
+        setBannerMsg(t(bannerKey, { name: playerLabel(nextPlayer) }));
+
+        if (mode === 'online') {
+          pushOnline({
+            boardFlat: flattenBoard(latestBoard),
+            drawPile: overrideDrawPile ?? drawPile,
+            discardPile: nextDiscard,
+            capturedWhitePieces: overrideCapW ?? capturedWhitePieces,
+            capturedBlackPieces: overrideCapB ?? capturedBlackPieces,
+            exiledPieces: overrideExiled ?? exiledPieces,
+            enPassantTarget: overrideEP !== undefined ? overrideEP : enPassantTarget,
+            currentCard: null,
+            cardFaceDown: true,
+            activePlayer: nextPlayer,
+            turnsPlayed: nextTurns,
+            phase: 'DRAW_PHASE',
+            movesRemaining: 0,
+            skipOpponentTurns: 0,
+            wildTeleportPending: false,
+            plus2Remaining: 0,
+            plus4Remaining: 0,
+            pendingWildPieceType: '',
+            pendingPromotion: null,
+            p1TimeMs: Math.round(nextP1Ms),
+            p2TimeMs: Math.round(nextP2Ms),
+            bannerKey,
+            bannerParams: { name: playerLabel(nextPlayer) },
+            lastChainColor: nextChainColor,
+            lastChainBy: nextChainBy,
+            isFirstMoveOfTurn: true,
+            moveHistory: latestHistory,
+          });
         }
       }
     },
     [
       activeFaction,
       activePlayer,
+      capturedBlackPieces,
+      capturedWhitePieces,
+      discardPile,
+      drawPile,
+      enPassantTarget,
+      exiledPieces,
+      finishWithWin,
+      lastChainBy,
+      lastChainColor,
       localPlayStyle,
       mode,
+      moveHistory,
       p1Faction,
+      p1TimeMs,
+      p2TimeMs,
       playerLabel,
+      pushOnline,
       skipOpponentTurns,
       t,
       timeControl.increment,
       timeControl.minutes,
+      turnsPlayed,
     ]
   );
 
   const triggerReversCard = useCallback(
-    (card: Card) => {
+    (
+      card: Card,
+      overrideDrawPile?: Card[],
+      overrideDiscardPile?: Card[],
+      workingBoardParam?: (ChessPiece | null)[][],
+      workingCapWParam?: ChessPiece[],
+      workingCapBParam?: ChessPiece[],
+      overrideHistory?: MoveHistoryEntry[],
+      duelMsg = ''
+    ) => {
+      const latestBoard = workingBoardParam ?? board;
+      const latestCapW = workingCapWParam ?? capturedWhitePieces;
+      const latestCapB = workingCapBParam ?? capturedBlackPieces;
+      const nextHistory = [
+        ...(overrideHistory ?? moveHistory),
+        {
+          ply: (overrideHistory ?? moveHistory).length + 1,
+          turnNumber: turnsPlayed,
+          faction: activeFaction,
+          san: '↺ Revers',
+          comment: t('cardReversTitle'),
+          isChessMove: false,
+          cardColor: card.color,
+          cardValue: card.value,
+        },
+      ];
+      setMoveHistory(nextHistory);
+
       sound.playRotate();
       setPhase('REVERSING');
       setIsSpinning(true);
       setBannerMsg(t('bannerRevers'));
 
+      if (mode === 'online') {
+        pushOnline({
+          boardFlat: flattenBoard(latestBoard),
+          capturedWhitePieces: latestCapW,
+          capturedBlackPieces: latestCapB,
+          phase: 'REVERSING',
+          currentCard: card,
+          cardFaceDown: false,
+          bannerKey: 'bannerRevers',
+          bannerParams: {},
+          lastChainColor: card.color,
+          lastChainBy: activePlayer,
+          isFirstMoveOfTurn: true,
+          moveHistory: nextHistory,
+          lastDuelText: duelMsg,
+        });
+      }
+
       window.setTimeout(() => {
+        let nextP1Ms = p1TimeMs;
+        let nextP2Ms = p2TimeMs;
         if (timeControl.minutes > 0 && timeControl.increment > 0) {
           const incMs = timeControl.increment * 1000;
           if (activePlayer === 'p1') {
-            setP1TimeMs((prev) => prev + incMs);
+            nextP1Ms = p1TimeMs + incMs;
+            setP1TimeMs(nextP1Ms);
           } else {
-            setP2TimeMs((prev) => prev + incMs);
+            nextP2Ms = p2TimeMs + incMs;
+            setP2TimeMs(nextP2Ms);
           }
         }
 
@@ -430,68 +996,241 @@ export default function App() {
         setP1Faction(newP1Faction);
         setIsSpinning(false);
 
-        setDiscardPile((prev) => [...prev, card]);
+        const nextDiscard = [...(overrideDiscardPile ?? discardPile), card];
+        setDiscardPile(nextDiscard);
         setCurrentCard(null);
         setCardFaceDown(true);
         setSelectedCoord(null);
+        setLastChainColor(card.color);
+        setLastChainBy(activePlayer);
+        setIsFirstMoveOfTurn(true);
 
         const nextPlayer: PlayerId = activePlayer === 'p1' ? 'p2' : 'p1';
         const nextFac = nextPlayer === 'p1' ? newP1Faction : oppositeFaction(newP1Faction);
 
-        if (mode === 'local' && localPlayStyle === 'pass') {
+        if (mode === 'online') {
+          const myNewFac = myOnlineRole === 'p1' ? newP1Faction : oppositeFaction(newP1Faction);
+          setBoardFlipped(myNewFac === 'black');
+        } else if (mode === 'local' && localPlayStyle === 'pass') {
           setBoardFlipped(nextFac === 'black');
         } else {
           setBoardFlipped((f) => !f);
         }
 
+        const nextTurns = turnsPlayed + 1;
         setActivePlayer(nextPlayer);
-        setTurnsPlayed((tp) => tp + 1);
+        setTurnsPlayed(nextTurns);
         setPhase('DRAW_PHASE');
 
-        if (isInCheck(board, nextFac)) {
-          sound.playCheck();
-          setBannerMsg(t('bannerReversCheck', { name: playerLabel(nextPlayer) }));
-        } else {
-          setBannerMsg(t('bannerReversDone', { name: playerLabel(nextPlayer) }));
+        const inChk = isInCheck(latestBoard, nextFac);
+        if (inChk) sound.playCheck();
+        const bannerKey = inChk ? 'bannerReversCheck' : 'bannerReversDone';
+        setBannerMsg(t(bannerKey, { name: playerLabel(nextPlayer) }));
+
+        if (mode === 'online') {
+          pushOnline({
+            p1Faction: newP1Faction,
+            activePlayer: nextPlayer,
+            turnsPlayed: nextTurns,
+            drawPile: overrideDrawPile ?? drawPile,
+            discardPile: nextDiscard,
+            currentCard: null,
+            cardFaceDown: true,
+            phase: 'DRAW_PHASE',
+            p1TimeMs: Math.round(nextP1Ms),
+            p2TimeMs: Math.round(nextP2Ms),
+            bannerKey,
+            bannerParams: { name: playerLabel(nextPlayer) },
+            lastChainColor: card.color,
+            lastChainBy: activePlayer,
+            isFirstMoveOfTurn: true,
+            moveHistory: nextHistory,
+          });
         }
       }, 750);
     },
     [
+      activeFaction,
       activePlayer,
       board,
+      capturedBlackPieces,
+      capturedWhitePieces,
+      discardPile,
+      drawPile,
       localPlayStyle,
       mode,
+      moveHistory,
+      myOnlineRole,
       p1Faction,
+      p1TimeMs,
+      p2TimeMs,
       playerLabel,
+      pushOnline,
       t,
       timeControl.increment,
       timeControl.minutes,
+      turnsPlayed,
     ]
   );
 
   const resolveDrawnCard = useCallback(
-    (card: Card) => {
+    (card: Card, nextDrawPile: Card[], nextDiscardPile: Card[]) => {
       const val = card.value;
+      const isWildCard = val === 'wild' || val === 'wild-draw';
+
+      let workingBoard = board;
+      let workingCapW = capturedWhitePieces;
+      let workingCapB = capturedBlackPieces;
+      let workingHistory = moveHistory;
+      let duelMsg = '';
+
+      // Update chain tracking (black wilds break the chain!)
+      const nextChainColor: CardColor | '' = isWildCard ? '' : card.color;
+      const nextChainBy: PlayerId | '' = isWildCard ? '' : activePlayer;
+      setLastChainColor(nextChainColor);
+      setLastChainBy(nextChainBy);
+      setIsFirstMoveOfTurn(true);
+
+      // Regla 2: Duelo de Color (Coincidencia en Mesa)
+      if (
+        !isWildCard &&
+        lastChainColor !== '' &&
+        lastChainBy !== '' &&
+        lastChainBy !== activePlayer &&
+        card.color === lastChainColor
+      ) {
+        const duel = resolveColorDuel(workingBoard, workingCapW, workingCapB, activeFaction);
+        workingBoard = duel.nextBoard;
+        workingCapW = duel.nextCapW;
+        workingCapB = duel.nextCapB;
+        setBoard(workingBoard);
+        setCapturedWhitePieces(workingCapW);
+        setCapturedBlackPieces(workingCapB);
+        sound.playCapture();
+
+        const stolenLabel = duel.stolenPieceType ? pieceLabel(duel.stolenPieceType) : t('noneWord');
+        const lostLabel = duel.lostPieceType ? pieceLabel(duel.lostPieceType) : t('noneWord');
+        duelMsg = t('colorDuelBanner', {
+          color: colorLabel(card.color),
+          stolen: stolenLabel,
+          lost: lostLabel,
+        });
+        setDuelToastMsg(duelMsg);
+        window.setTimeout(() => setDuelToastMsg(null), 5000);
+
+        workingHistory = [
+          ...workingHistory,
+          {
+            ply: workingHistory.length + 1,
+            turnNumber: turnsPlayed,
+            faction: activeFaction,
+            san: t('colorDuelBadge', { color: colorLabel(card.color) }),
+            comment: duelMsg,
+            isChessMove: false,
+            cardColor: card.color,
+            cardValue: card.value,
+            duelEvent: true,
+          },
+        ];
+        setMoveHistory(workingHistory);
+      }
+
+      const workingOwnCaptured =
+        activeFaction === 'white' ? workingCapW : workingCapB;
 
       if (val === '0') {
-        setBannerMsg(t('bannerCard0'));
+        const zeroHist: MoveHistoryEntry[] = [
+          ...workingHistory,
+          {
+            ply: workingHistory.length + 1,
+            turnNumber: turnsPlayed,
+            faction: activeFaction,
+            san: `0 ${colorLabel(card.color)}`,
+            comment: t('card0Title'),
+            isChessMove: false,
+            cardColor: card.color,
+            cardValue: card.value,
+          },
+        ];
+        setMoveHistory(zeroHist);
+        setBannerMsg(duelMsg || t('bannerCard0'));
+        if (mode === 'online') {
+          pushOnline({
+            boardFlat: flattenBoard(workingBoard),
+            capturedWhitePieces: workingCapW,
+            capturedBlackPieces: workingCapB,
+            drawPile: nextDrawPile,
+            discardPile: nextDiscardPile,
+            currentCard: card,
+            cardFaceDown: false,
+            bannerKey: 'bannerCard0',
+            bannerParams: {},
+            lastChainColor: nextChainColor,
+            lastChainBy: nextChainBy,
+            isFirstMoveOfTurn: true,
+            moveHistory: zeroHist,
+            lastDuelText: duelMsg,
+          });
+        }
         window.setTimeout(() => {
-          endTurn(board, card);
+          endTurn(
+            workingBoard,
+            card,
+            nextDrawPile,
+            nextDiscardPile,
+            workingCapW,
+            workingCapB,
+            undefined,
+            undefined,
+            zeroHist,
+            { color: nextChainColor, by: nextChainBy }
+          );
         }, 1150);
         return;
       }
 
       if (val === 'revers') {
-        triggerReversCard(card);
+        triggerReversCard(
+          card,
+          nextDrawPile,
+          nextDiscardPile,
+          workingBoard,
+          workingCapW,
+          workingCapB,
+          workingHistory,
+          duelMsg
+        );
         return;
       }
 
       if (val === 'interdit') {
         sound.playSpecial();
-        setSkipOpponentTurns((s) => s + 1);
+        const nextSkip = skipOpponentTurns + 1;
+        setSkipOpponentTurns(nextSkip);
         setMovesRemaining(1);
         setPhase('MOVE_PHASE');
-        setBannerMsg(t('bannerInterdit'));
+        setBannerMsg(duelMsg ? `${duelMsg} · ${t('bannerInterdit')}` : t('bannerInterdit'));
+        if (mode === 'online') {
+          pushOnline({
+            boardFlat: flattenBoard(workingBoard),
+            capturedWhitePieces: workingCapW,
+            capturedBlackPieces: workingCapB,
+            drawPile: nextDrawPile,
+            discardPile: nextDiscardPile,
+            currentCard: card,
+            cardFaceDown: false,
+            skipOpponentTurns: nextSkip,
+            movesRemaining: 1,
+            phase: 'MOVE_PHASE',
+            bannerKey: 'bannerInterdit',
+            bannerParams: {},
+            lastChainColor: nextChainColor,
+            lastChainBy: nextChainBy,
+            isFirstMoveOfTurn: true,
+            moveHistory: workingHistory,
+            lastDuelText: duelMsg,
+          });
+        }
         return;
       }
 
@@ -499,6 +1238,22 @@ export default function App() {
         sound.playSpecial();
         setPhase('WILD_COLOR_CHOICE');
         setBannerMsg(t('bannerWildColor'));
+        if (mode === 'online') {
+          pushOnline({
+            drawPile: nextDrawPile,
+            discardPile: nextDiscardPile,
+            currentCard: card,
+            cardFaceDown: false,
+            phase: 'WILD_COLOR_CHOICE',
+            bannerKey: 'bannerWildColor',
+            bannerParams: {},
+            lastChainColor: '',
+            lastChainBy: '',
+            isFirstMoveOfTurn: true,
+            moveHistory: workingHistory,
+            lastDuelText: '',
+          });
+        }
         return;
       }
 
@@ -506,37 +1261,133 @@ export default function App() {
         sound.playSpecial();
         setPhase('WILD_PLUS4_CHOICE');
         setBannerMsg(t('bannerWildPlus4'));
+        if (mode === 'online') {
+          pushOnline({
+            drawPile: nextDrawPile,
+            discardPile: nextDiscardPile,
+            currentCard: card,
+            cardFaceDown: false,
+            phase: 'WILD_PLUS4_CHOICE',
+            bannerKey: 'bannerWildPlus4',
+            bannerParams: {},
+            lastChainColor: '',
+            lastChainBy: '',
+            isFirstMoveOfTurn: true,
+            moveHistory: workingHistory,
+            lastDuelText: '',
+          });
+        }
         return;
       }
 
       if (val === 'draw2') {
         sound.playSpecial();
-        const emptyHome = getEmptyHomeRows(board, activeFaction);
+        const emptyHome = getEmptyHomeRows(workingBoard, activeFaction);
 
-        if (ownCapturedPieces.length > 0) {
+        if (workingOwnCaptured.length > 0) {
           if (emptyHome.length === 0) {
             setMovesRemaining(2);
             setPhase('MOVE_PHASE');
             setBannerMsg(t('bannerPlus2NoSpace'));
+            if (mode === 'online') {
+              pushOnline({
+                boardFlat: flattenBoard(workingBoard),
+                capturedWhitePieces: workingCapW,
+                capturedBlackPieces: workingCapB,
+                drawPile: nextDrawPile,
+                discardPile: nextDiscardPile,
+                currentCard: card,
+                cardFaceDown: false,
+                movesRemaining: 2,
+                phase: 'MOVE_PHASE',
+                bannerKey: 'bannerPlus2NoSpace',
+                bannerParams: {},
+                lastChainColor: nextChainColor,
+                lastChainBy: nextChainBy,
+                isFirstMoveOfTurn: true,
+                moveHistory: workingHistory,
+                lastDuelText: duelMsg,
+              });
+            }
           } else {
-            const count = Math.min(2, ownCapturedPieces.length, emptyHome.length);
+            const count = Math.min(2, workingOwnCaptured.length, emptyHome.length);
             setPlus2Remaining(count);
             setSelectedRecoverId(null);
             setPhase('PLUS2_RECOVER_PHASE');
             setBannerMsg(t('bannerPlus2Recover', { count }));
+            if (mode === 'online') {
+              pushOnline({
+                boardFlat: flattenBoard(workingBoard),
+                capturedWhitePieces: workingCapW,
+                capturedBlackPieces: workingCapB,
+                drawPile: nextDrawPile,
+                discardPile: nextDiscardPile,
+                currentCard: card,
+                cardFaceDown: false,
+                plus2Remaining: count,
+                phase: 'PLUS2_RECOVER_PHASE',
+                bannerKey: 'bannerPlus2Recover',
+                bannerParams: { count },
+                lastChainColor: nextChainColor,
+                lastChainBy: nextChainBy,
+                isFirstMoveOfTurn: true,
+                moveHistory: workingHistory,
+                lastDuelText: duelMsg,
+              });
+            }
           }
           return;
         }
 
-        const prio = getHighestPriorityEnemyCoords(board, enemyFaction);
+        const prio = getHighestPriorityEnemyCoords(workingBoard, enemyFaction);
         if (prio.tier === 4) {
           setMovesRemaining(2);
           setPhase('MOVE_PHASE');
           setBannerMsg(t('bannerPlus2OnlyKing'));
+          if (mode === 'online') {
+            pushOnline({
+              boardFlat: flattenBoard(workingBoard),
+              capturedWhitePieces: workingCapW,
+              capturedBlackPieces: workingCapB,
+              drawPile: nextDrawPile,
+              discardPile: nextDiscardPile,
+              currentCard: card,
+              cardFaceDown: false,
+              movesRemaining: 2,
+              phase: 'MOVE_PHASE',
+              bannerKey: 'bannerPlus2OnlyKing',
+              bannerParams: {},
+              lastChainColor: nextChainColor,
+              lastChainBy: nextChainBy,
+              isFirstMoveOfTurn: true,
+              moveHistory: workingHistory,
+              lastDuelText: duelMsg,
+            });
+          }
         } else if (emptyHome.length === 0) {
           setMovesRemaining(2);
           setPhase('MOVE_PHASE');
           setBannerMsg(t('bannerPlus2NoSpace'));
+          if (mode === 'online') {
+            pushOnline({
+              boardFlat: flattenBoard(workingBoard),
+              capturedWhitePieces: workingCapW,
+              capturedBlackPieces: workingCapB,
+              drawPile: nextDrawPile,
+              discardPile: nextDiscardPile,
+              currentCard: card,
+              cardFaceDown: false,
+              movesRemaining: 2,
+              phase: 'MOVE_PHASE',
+              bannerKey: 'bannerPlus2NoSpace',
+              bannerParams: {},
+              lastChainColor: nextChainColor,
+              lastChainBy: nextChainBy,
+              isFirstMoveOfTurn: true,
+              moveHistory: workingHistory,
+              lastDuelText: duelMsg,
+            });
+          }
         } else {
           const stealQuota = prio.tier === 3 ? 1 : Math.min(2, emptyHome.length);
           setPlus2Remaining(stealQuota);
@@ -549,6 +1400,26 @@ export default function App() {
               ? t('bannerTier2')
               : t('bannerTier3');
           setBannerMsg(t('bannerPlus2Steal', { tier: tierName }));
+          if (mode === 'online') {
+            pushOnline({
+              boardFlat: flattenBoard(workingBoard),
+              capturedWhitePieces: workingCapW,
+              capturedBlackPieces: workingCapB,
+              drawPile: nextDrawPile,
+              discardPile: nextDiscardPile,
+              currentCard: card,
+              cardFaceDown: false,
+              plus2Remaining: stealQuota,
+              phase: 'PLUS2_STEAL_PHASE',
+              bannerKey: 'bannerPlus2Steal',
+              bannerParams: { tier: tierName },
+              lastChainColor: nextChainColor,
+              lastChainBy: nextChainBy,
+              isFirstMoveOfTurn: true,
+              moveHistory: workingHistory,
+              lastDuelText: duelMsg,
+            });
+          }
         }
         return;
       }
@@ -556,46 +1427,98 @@ export default function App() {
       const num = parseInt(val, 10);
       setMovesRemaining(num);
       setPhase('MOVE_PHASE');
-      const legal = getUnoChessLegalMoves(board, activeFaction, enPassantTarget, num);
+      const legal = getUnoChessLegalMoves(workingBoard, activeFaction, enPassantTarget, num);
       if (legal.length === 0) {
-        if (isInCheck(board, activeFaction)) {
-          sound.playCheckmate();
-          setWinnerName(playerLabel(activePlayer === 'p1' ? 'p2' : 'p1'));
-          setGameOverReason(t('bannerMateWin'));
-          setPhase('GAME_OVER');
+        if (isInCheck(workingBoard, activeFaction)) {
+          finishWithWin(activePlayer === 'p1' ? 'p2' : 'p1', 'bannerMateWin', workingBoard, {
+            capturedWhitePieces: workingCapW,
+            capturedBlackPieces: workingCapB,
+            moveHistory: workingHistory,
+          });
         } else {
           setBannerMsg(t('bannerNoMovesEnd'));
-          window.setTimeout(() => endTurn(board, card), 900);
+          window.setTimeout(
+            () =>
+              endTurn(
+                workingBoard,
+                card,
+                nextDrawPile,
+                nextDiscardPile,
+                workingCapW,
+                workingCapB,
+                undefined,
+                undefined,
+                workingHistory,
+                { color: nextChainColor, by: nextChainBy }
+              ),
+            900
+          );
         }
         return;
       }
-      setBannerMsg(t('bannerMovesRemaining', { count: num }));
+      setBannerMsg(
+        duelMsg
+          ? `${duelMsg} · ${t('bannerMovesRemaining', { count: num })}`
+          : t('bannerMovesRemaining', { count: num })
+      );
+      if (mode === 'online') {
+        pushOnline({
+          boardFlat: flattenBoard(workingBoard),
+          capturedWhitePieces: workingCapW,
+          capturedBlackPieces: workingCapB,
+          drawPile: nextDrawPile,
+          discardPile: nextDiscardPile,
+          currentCard: card,
+          cardFaceDown: false,
+          movesRemaining: num,
+          phase: 'MOVE_PHASE',
+          bannerKey: 'bannerMovesRemaining',
+          bannerParams: { count: num },
+          lastChainColor: nextChainColor,
+          lastChainBy: nextChainBy,
+          isFirstMoveOfTurn: true,
+          moveHistory: workingHistory,
+          lastDuelText: duelMsg,
+        });
+      }
     },
     [
       activeFaction,
       activePlayer,
       board,
+      capturedBlackPieces,
+      capturedWhitePieces,
+      colorLabel,
       enPassantTarget,
       endTurn,
       enemyFaction,
-      ownCapturedPieces.length,
-      playerLabel,
+      finishWithWin,
+      lastChainBy,
+      lastChainColor,
+      mode,
+      moveHistory,
+      pieceLabel,
+      pushOnline,
+      skipOpponentTurns,
       t,
       triggerReversCard,
+      turnsPlayed,
     ]
   );
 
   const handleDrawCard = useCallback(() => {
-    if (phase !== 'DRAW_PHASE' || isPaused) return;
+    if (phase !== 'DRAW_PHASE' || !isHumanTurn || (isPaused && mode !== 'online')) return;
     sound.unlock();
 
     let workingDeck = [...drawPile];
+    let workingDiscard = [...discardPile];
     let reshuffled = false;
     if (workingDeck.length === 0) {
-      if (discardPile.length === 0) {
+      if (workingDiscard.length === 0) {
         workingDeck = createDeck();
       } else {
-        workingDeck = shuffleCards(discardPile);
+        workingDeck = shuffleCards(workingDiscard);
+        workingDiscard = [];
         setDiscardPile([]);
       }
       reshuffled = true;
@@ -615,86 +1538,228 @@ export default function App() {
 
     sound.playDraw();
 
+    if (mode === 'online') {
+      pushOnline({
+        drawPile: rest,
+        discardPile: workingDiscard,
+        currentCard: drawn,
+        cardFaceDown: false,
+        phase: 'CARD_REVEALING',
+        bannerKey: reshuffled ? 'bannerReshuffle' : 'bannerDrawing',
+        bannerParams: reshuffled ? {} : { name: playerLabel(activePlayer) },
+      });
+    }
+
     window.setTimeout(() => {
       setCardFaceDown(false);
     }, 90);
 
     window.setTimeout(() => {
-      resolveDrawnCard(drawn);
+      resolveDrawnCard(drawn, rest, workingDiscard);
     }, 620);
-  }, [activePlayer, discardPile, drawPile, isPaused, phase, playerLabel, resolveDrawnCard, t]);
+  }, [
+    activePlayer,
+    discardPile,
+    drawPile,
+    isHumanTurn,
+    isPaused,
+    mode,
+    phase,
+    playerLabel,
+    pushOnline,
+    resolveDrawnCard,
+    t,
+  ]);
 
   const executeMove = useCallback(
     (move: Move, promoType: PieceType = 'queen', overrideRemaining?: number) => {
       const movingPiece = board[move.from.row][move.from.col];
       if (!movingPiece) return;
 
-      if (move.promotionRequired && isHumanTurn && overrideRemaining === undefined) {
+      // Regla 1: Bono de Sincronía de Color (+2 extra moves if 1st move matches non-wild card color)
+      const syncEligible =
+        isFirstMoveOfTurn &&
+        currentCard !== null &&
+        currentCard.value !== 'wild' &&
+        currentCard.value !== 'wild-draw' &&
+        PIECE_BASE_COLOR_MAP[movingPiece.type] === currentCard.color;
+      if (isFirstMoveOfTurn) {
+        setIsFirstMoveOfTurn(false);
+      }
+      const syncBonusMoves = syncEligible ? 2 : 0;
+
+      const promoRow = movingPiece.faction === 'white' ? 0 : 7;
+      const isPawnPromotion =
+        movingPiece.type === 'pawn' && (move.promotionRequired || move.to.row === promoRow);
+
+      // Human pawn reaching last rank -> keep as pawn and open PromotionModal!
+      if (isPawnPromotion && isHumanTurn && overrideRemaining === undefined) {
         const { nextBoard, capturedPiece, nextEnPassant } = applyMoveToBoard(
           board,
-          move,
-          'queen'
+          { ...move, promotionRequired: false },
+          'pawn'
         );
+        let nextCapW = capturedWhitePieces;
+        let nextCapB = capturedBlackPieces;
         if (capturedPiece) {
           sound.playCapture();
           if (capturedPiece.faction === 'white') {
-            setCapturedWhitePieces((prev) => [...prev, capturedPiece]);
+            nextCapW = [...capturedWhitePieces, capturedPiece];
+            setCapturedWhitePieces(nextCapW);
           } else {
-            setCapturedBlackPieces((prev) => [...prev, capturedPiece]);
+            nextCapB = [...capturedBlackPieces, capturedPiece];
+            setCapturedBlackPieces(nextCapB);
           }
         } else {
           sound.playMove();
         }
+        if (syncEligible) sound.playSpecial();
+
+        const enemy = oppositeFaction(movingPiece.faction);
+        const san = formatMoveToSAN(board, { ...move, promotionRequired: false }, null, nextBoard, enemy);
+        const nextHistory: MoveHistoryEntry[] = [
+          ...moveHistory,
+          {
+            ply: moveHistory.length + 1,
+            turnNumber: turnsPlayed,
+            faction: movingPiece.faction,
+            san,
+            comment: syncEligible
+              ? `${currentCard?.value} ${colorLabel(currentCard!.color)} · ${t('colorSyncBadge')}`
+              : currentCard
+              ? `${currentCard.value} ${colorLabel(currentCard.color)}`
+              : '',
+            isChessMove: true,
+            cardColor: currentCard?.color ?? '',
+            cardValue: currentCard?.value ?? '',
+            syncBonus: syncEligible,
+          },
+        ];
+        setMoveHistory(nextHistory);
+
+        const enemyKingAlive = nextBoard.some((r) =>
+          r.some((p) => p && p.faction === enemy && p.type === 'king')
+        );
+        if (!enemyKingAlive) {
+          setBoard(nextBoard);
+          finishWithWin(activePlayer, 'bannerKingCaptured', nextBoard, {
+            moveHistory: nextHistory,
+          });
+          return;
+        }
+
+        const promoData: PendingPromotion = { coord: move.to, faction: movingPiece.faction };
         setBoard(nextBoard);
         setEnPassantTarget(nextEnPassant);
         setSelectedCoord(null);
-        setPendingPromotion({ coord: move.to, faction: movingPiece.faction });
-        setPromotionSavedMovesAfter(movesRemaining - 1);
+        setPendingPromotion(promoData);
+        setPromotionSavedMovesAfter(movesRemaining - 1 + syncBonusMoves);
         setPhase('PROMOTION_CHOICE');
+
+        if (mode === 'online') {
+          pushOnline({
+            boardFlat: flattenBoard(nextBoard),
+            capturedWhitePieces: nextCapW,
+            capturedBlackPieces: nextCapB,
+            enPassantTarget: nextEnPassant,
+            pendingPromotion: promoData,
+            phase: 'PROMOTION_CHOICE',
+            bannerKey: 'promoTitle',
+            bannerParams: {},
+            isFirstMoveOfTurn: false,
+            moveHistory: nextHistory,
+          });
+        }
         return;
       }
 
       const { nextBoard, capturedPiece, nextEnPassant } = applyMoveToBoard(
         board,
-        move,
+        { ...move, promotionRequired: isPawnPromotion },
         promoType
       );
 
+      let nextCapW = capturedWhitePieces;
+      let nextCapB = capturedBlackPieces;
       if (capturedPiece) {
         sound.playCapture();
         if (capturedPiece.faction === 'white') {
-          setCapturedWhitePieces((prev) => [...prev, capturedPiece]);
+          nextCapW = [...capturedWhitePieces, capturedPiece];
+          setCapturedWhitePieces(nextCapW);
         } else {
-          setCapturedBlackPieces((prev) => [...prev, capturedPiece]);
+          nextCapB = [...capturedBlackPieces, capturedPiece];
+          setCapturedBlackPieces(nextCapB);
         }
       } else {
         sound.playMove();
       }
+      if (syncEligible) sound.playSpecial();
 
       setBoard(nextBoard);
       setEnPassantTarget(nextEnPassant);
       setSelectedCoord(null);
 
-      const rem = overrideRemaining !== undefined ? overrideRemaining : movesRemaining - 1;
       const enemy = oppositeFaction(movingPiece.faction);
+      const san = formatMoveToSAN(
+        board,
+        { ...move, promotionRequired: isPawnPromotion },
+        isPawnPromotion ? promoType : null,
+        nextBoard,
+        enemy
+      );
+      const nextHistory: MoveHistoryEntry[] = [
+        ...moveHistory,
+        {
+          ply: moveHistory.length + 1,
+          turnNumber: turnsPlayed,
+          faction: movingPiece.faction,
+          san,
+          comment: syncEligible
+            ? `${currentCard?.value} ${colorLabel(currentCard!.color)} · ${t('colorSyncBadge')}`
+            : currentCard
+            ? `${currentCard.value} ${colorLabel(currentCard.color)}`
+            : '',
+          isChessMove: true,
+          cardColor: currentCard?.color ?? '',
+          cardValue: currentCard?.value ?? '',
+          syncBonus: syncEligible,
+        },
+      ];
+      setMoveHistory(nextHistory);
+
+      const baseRem = overrideRemaining !== undefined ? overrideRemaining : movesRemaining - 1;
       const enemyKingAlive = nextBoard.some((r) =>
         r.some((p) => p && p.faction === enemy && p.type === 'king')
       );
 
       if (!enemyKingAlive) {
-        sound.playCheckmate();
-        setWinnerName(playerLabel(activePlayer));
-        setGameOverReason(t('bannerKingCaptured'));
-        setPhase('GAME_OVER');
+        finishWithWin(activePlayer, 'bannerKingCaptured', nextBoard, {
+          capturedWhitePieces: nextCapW,
+          capturedBlackPieces: nextCapB,
+          moveHistory: nextHistory,
+        });
         return;
       }
 
+      // If the card's base moves reached 0 AND already delivered Checkmate, win immediately
+      if (baseRem <= 0 && isCheckmate(nextBoard, enemy)) {
+        finishWithWin(activePlayer, 'bannerMateWin', nextBoard, {
+          capturedWhitePieces: nextCapW,
+          capturedBlackPieces: nextCapB,
+          moveHistory: nextHistory,
+        });
+        return;
+      }
+
+      const rem = baseRem + syncBonusMoves;
+
       if (rem <= 0) {
         if (isCheckmate(nextBoard, enemy)) {
-          sound.playCheckmate();
-          setWinnerName(playerLabel(activePlayer));
-          setGameOverReason(t('bannerMateWin'));
-          setPhase('GAME_OVER');
+          finishWithWin(activePlayer, 'bannerMateWin', nextBoard, {
+            capturedWhitePieces: nextCapW,
+            capturedBlackPieces: nextCapB,
+            moveHistory: nextHistory,
+          });
           return;
         }
         if (isInCheck(nextBoard, enemy)) {
@@ -705,9 +1770,33 @@ export default function App() {
           setMovesRemaining(0);
           setPhase('WILD_TELEPORT_PHASE');
           setBannerMsg(t('bannerWildStep2'));
+          if (mode === 'online') {
+            pushOnline({
+              boardFlat: flattenBoard(nextBoard),
+              capturedWhitePieces: nextCapW,
+              capturedBlackPieces: nextCapB,
+              enPassantTarget: nextEnPassant,
+              movesRemaining: 0,
+              phase: 'WILD_TELEPORT_PHASE',
+              bannerKey: 'bannerWildStep2',
+              bannerParams: {},
+              isFirstMoveOfTurn: false,
+              moveHistory: nextHistory,
+            });
+          }
         } else {
           setMovesRemaining(0);
-          endTurn(nextBoard, currentCard);
+          endTurn(
+            nextBoard,
+            currentCard,
+            undefined,
+            undefined,
+            nextCapW,
+            nextCapB,
+            undefined,
+            nextEnPassant,
+            nextHistory
+          );
         }
       } else {
         setMovesRemaining(rem);
@@ -717,16 +1806,59 @@ export default function App() {
             setMovesRemaining(0);
             setPhase('WILD_TELEPORT_PHASE');
             setBannerMsg(t('bannerWildStep2'));
+            if (mode === 'online') {
+              pushOnline({
+                boardFlat: flattenBoard(nextBoard),
+                capturedWhitePieces: nextCapW,
+                capturedBlackPieces: nextCapB,
+                enPassantTarget: nextEnPassant,
+                movesRemaining: 0,
+                phase: 'WILD_TELEPORT_PHASE',
+                bannerKey: 'bannerWildStep2',
+                bannerParams: {},
+                isFirstMoveOfTurn: false,
+                moveHistory: nextHistory,
+              });
+            }
           } else {
-            endTurn(nextBoard, currentCard);
+            endTurn(
+              nextBoard,
+              currentCard,
+              undefined,
+              undefined,
+              nextCapW,
+              nextCapB,
+              undefined,
+              nextEnPassant,
+              nextHistory
+            );
           }
           return;
         }
-        if (isInCheck(nextBoard, enemy)) {
-          sound.playCheck();
-          setBannerMsg(t('bannerCheckRemaining', { count: rem }));
-        } else {
-          setBannerMsg(t('bannerMovesRemaining', { count: rem }));
+        const inChk = isInCheck(nextBoard, enemy);
+        if (inChk) sound.playCheck();
+        const bannerKey = syncEligible
+          ? 'colorSyncBonusBanner'
+          : inChk
+          ? 'bannerCheckRemaining'
+          : 'bannerMovesRemaining';
+        const bannerParams: Record<string, string | number> = syncEligible
+          ? { color: colorLabel(currentCard!.color), count: rem }
+          : { count: rem };
+        setBannerMsg(t(bannerKey, bannerParams));
+        if (mode === 'online') {
+          pushOnline({
+            boardFlat: flattenBoard(nextBoard),
+            capturedWhitePieces: nextCapW,
+            capturedBlackPieces: nextCapB,
+            enPassantTarget: nextEnPassant,
+            movesRemaining: rem,
+            phase: 'MOVE_PHASE',
+            bannerKey,
+            bannerParams,
+            isFirstMoveOfTurn: false,
+            moveHistory: nextHistory,
+          });
         }
       }
     },
@@ -734,12 +1866,20 @@ export default function App() {
       activeFaction,
       activePlayer,
       board,
+      capturedBlackPieces,
+      capturedWhitePieces,
+      colorLabel,
       currentCard,
       endTurn,
+      finishWithWin,
+      isFirstMoveOfTurn,
       isHumanTurn,
+      mode,
+      moveHistory,
       movesRemaining,
-      playerLabel,
+      pushOnline,
       t,
+      turnsPlayed,
       wildTeleportPending,
     ]
   );
@@ -758,27 +1898,91 @@ export default function App() {
     setBoard(nextBoard);
     setPendingPromotion(null);
 
+    const promoLetter = type === 'queen' ? 'Q' : type === 'rook' ? 'R' : type === 'bishop' ? 'B' : 'N';
+    const nextHistory: MoveHistoryEntry[] = [
+      ...moveHistory,
+      {
+        ply: moveHistory.length + 1,
+        turnNumber: turnsPlayed,
+        faction: pendingPromotion.faction,
+        san: `${coordToAlgebraic(pendingPromotion.coord)}=${promoLetter}`,
+        comment: pieceLabel(type),
+        isChessMove: false,
+      },
+    ];
+    setMoveHistory(nextHistory);
+
     const enemy = oppositeFaction(pendingPromotion.faction);
     if (promotionSavedMovesAfter <= 0) {
       if (isCheckmate(nextBoard, enemy)) {
-        sound.playCheckmate();
-        setWinnerName(playerLabel(activePlayer));
-        setGameOverReason(t('bannerPromoMate'));
-        setPhase('GAME_OVER');
+        finishWithWin(activePlayer, 'bannerPromoMate', nextBoard, {
+          pendingPromotion: null,
+          moveHistory: nextHistory,
+        });
         return;
       }
       if (wildTeleportPending) {
         setMovesRemaining(0);
         setPhase('WILD_TELEPORT_PHASE');
         setBannerMsg(t('bannerWildStep2'));
+        if (mode === 'online') {
+          pushOnline({
+            boardFlat: flattenBoard(nextBoard),
+            pendingPromotion: null,
+            movesRemaining: 0,
+            phase: 'WILD_TELEPORT_PHASE',
+            bannerKey: 'bannerWildStep2',
+            bannerParams: {},
+            moveHistory: nextHistory,
+          });
+        }
       } else {
         setMovesRemaining(0);
-        endTurn(nextBoard, currentCard);
+        endTurn(nextBoard, currentCard, undefined, undefined, undefined, undefined, undefined, undefined, nextHistory);
       }
     } else {
+      const nextLegal = getUnoChessLegalMoves(
+        nextBoard,
+        activeFaction,
+        enPassantTarget,
+        promotionSavedMovesAfter
+      );
+      if (nextLegal.length === 0) {
+        if (wildTeleportPending) {
+          setMovesRemaining(0);
+          setPhase('WILD_TELEPORT_PHASE');
+          setBannerMsg(t('bannerWildStep2'));
+          if (mode === 'online') {
+            pushOnline({
+              boardFlat: flattenBoard(nextBoard),
+              pendingPromotion: null,
+              movesRemaining: 0,
+              phase: 'WILD_TELEPORT_PHASE',
+              bannerKey: 'bannerWildStep2',
+              bannerParams: {},
+              moveHistory: nextHistory,
+            });
+          }
+        } else {
+          setMovesRemaining(0);
+          endTurn(nextBoard, currentCard, undefined, undefined, undefined, undefined, undefined, undefined, nextHistory);
+        }
+        return;
+      }
       setMovesRemaining(promotionSavedMovesAfter);
       setPhase('MOVE_PHASE');
       setBannerMsg(t('bannerMovesRemaining', { count: promotionSavedMovesAfter }));
+      if (mode === 'online') {
+        pushOnline({
+          boardFlat: flattenBoard(nextBoard),
+          pendingPromotion: null,
+          movesRemaining: promotionSavedMovesAfter,
+          phase: 'MOVE_PHASE',
+          bannerKey: 'bannerMovesRemaining',
+          bannerParams: { count: promotionSavedMovesAfter },
+          moveHistory: nextHistory,
+        });
+      }
     }
   };
 
@@ -798,6 +2002,13 @@ export default function App() {
     highlightCoords: Coord[];
     highlightMode: 'none' | 'place' | 'target-enemy' | 'teleport-dest' | 'select-own';
   }>(() => {
+    if (phase === 'WILD_PLACE_PIECE_PHASE') {
+      return {
+        highlightCoords: getWildPlacementSquares(board, activeFaction),
+        highlightMode: 'place',
+      };
+    }
+
     if (phase === 'PLUS2_RECOVER_PHASE') {
       if (selectedRecoverId) {
         return {
@@ -863,7 +2074,7 @@ export default function App() {
   ]);
 
   const handleSquareClick = (coord: Coord) => {
-    if (!isHumanTurn || isPaused) return;
+    if (!isHumanTurn || (isPaused && mode !== 'online')) return;
     const clickedPiece = board[coord.row][coord.col];
 
     if (phase === 'MOVE_PHASE') {
@@ -896,6 +2107,60 @@ export default function App() {
       return;
     }
 
+    if (phase === 'WILD_PLACE_PIECE_PHASE') {
+      if (
+        pendingWildPieceType &&
+        highlightCoords.some((h) => h.row === coord.row && h.col === coord.col)
+      ) {
+        const nextBoard = cloneBoard(board);
+        nextBoard[coord.row][coord.col] = {
+          id: `wild-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          type: pendingWildPieceType,
+          faction: activeFaction,
+          pieceNumber: 1,
+          hasMoved: true,
+        };
+        sound.playSpecial();
+        setBoard(nextBoard);
+        setPendingWildPieceType(null);
+        setWildTeleportPending(true);
+
+        const step1Moves = getUnoChessLegalMoves(nextBoard, activeFaction, enPassantTarget, 1);
+        if (step1Moves.length > 0) {
+          setMovesRemaining(1);
+          setPhase('MOVE_PHASE');
+          setBannerMsg(t('bannerWildStep1'));
+          if (mode === 'online') {
+            pushOnline({
+              boardFlat: flattenBoard(nextBoard),
+              pendingWildPieceType: '',
+              wildTeleportPending: true,
+              movesRemaining: 1,
+              phase: 'MOVE_PHASE',
+              bannerKey: 'bannerWildStep1',
+              bannerParams: {},
+            });
+          }
+        } else {
+          setMovesRemaining(0);
+          setPhase('WILD_TELEPORT_PHASE');
+          setBannerMsg(t('bannerWildStep2'));
+          if (mode === 'online') {
+            pushOnline({
+              boardFlat: flattenBoard(nextBoard),
+              pendingWildPieceType: '',
+              wildTeleportPending: true,
+              movesRemaining: 0,
+              phase: 'WILD_TELEPORT_PHASE',
+              bannerKey: 'bannerWildStep2',
+              bannerParams: {},
+            });
+          }
+        }
+      }
+      return;
+    }
+
     if (phase === 'WILD_TELEPORT_PHASE') {
       if (
         selectedCoord &&
@@ -910,6 +2175,27 @@ export default function App() {
         setBoard(nextBoard);
         setSelectedCoord(null);
         setWildTeleportPending(false);
+
+        // If a pawn was teleported onto its promotion rank, trigger Pawn Promotion!
+        const promoRow = moving.faction === 'white' ? 0 : 7;
+        if (moving.type === 'pawn' && coord.row === promoRow) {
+          const promoData: PendingPromotion = { coord, faction: moving.faction };
+          setPendingPromotion(promoData);
+          setPromotionSavedMovesAfter(0);
+          setPhase('PROMOTION_CHOICE');
+          if (mode === 'online') {
+            pushOnline({
+              boardFlat: flattenBoard(nextBoard),
+              wildTeleportPending: false,
+              pendingPromotion: promoData,
+              phase: 'PROMOTION_CHOICE',
+              bannerKey: 'promoTitle',
+              bannerParams: {},
+            });
+          }
+          return;
+        }
+
         endTurn(nextBoard, currentCard);
         return;
       }
@@ -933,10 +2219,14 @@ export default function App() {
         sound.playSpecial();
         setBoard(nextBoard);
 
+        let nextCapW = capturedWhitePieces;
+        let nextCapB = capturedBlackPieces;
         if (activeFaction === 'white') {
-          setCapturedWhitePieces((prev) => prev.filter((p) => p.id !== selectedRecoverId));
+          nextCapW = capturedWhitePieces.filter((p) => p.id !== selectedRecoverId);
+          setCapturedWhitePieces(nextCapW);
         } else {
-          setCapturedBlackPieces((prev) => prev.filter((p) => p.id !== selectedRecoverId));
+          nextCapB = capturedBlackPieces.filter((p) => p.id !== selectedRecoverId);
+          setCapturedBlackPieces(nextCapB);
         }
 
         const rem = plus2Remaining - 1;
@@ -945,10 +2235,20 @@ export default function App() {
         const remainingCapturedCount = ownCapturedPieces.length - 1;
         if (rem <= 0 || nextEmpties.length === 0 || remainingCapturedCount <= 0) {
           setPlus2Remaining(0);
-          endTurn(nextBoard, currentCard);
+          endTurn(nextBoard, currentCard, undefined, undefined, nextCapW, nextCapB);
         } else {
           setPlus2Remaining(rem);
           setBannerMsg(t('bannerRecoveredMore', { count: rem }));
+          if (mode === 'online') {
+            pushOnline({
+              boardFlat: flattenBoard(nextBoard),
+              capturedWhitePieces: nextCapW,
+              capturedBlackPieces: nextCapB,
+              plus2Remaining: rem,
+              bannerKey: 'bannerRecoveredMore',
+              bannerParams: { count: rem },
+            });
+          }
         }
       }
       return;
@@ -991,6 +2291,14 @@ export default function App() {
           const cappedRem = nextPrio.tier === 3 ? 1 : rem;
           setPlus2Remaining(cappedRem);
           setBannerMsg(t('bannerStolenMore', { count: cappedRem }));
+          if (mode === 'online') {
+            pushOnline({
+              boardFlat: flattenBoard(nextBoard),
+              plus2Remaining: cappedRem,
+              bannerKey: 'bannerStolenMore',
+              bannerParams: { count: cappedRem },
+            });
+          }
         }
       }
       return;
@@ -1005,16 +2313,26 @@ export default function App() {
         nextBoard[coord.row][coord.col] = null;
         sound.playCapture();
         setBoard(nextBoard);
-        setExiledPieces((prev) => [...prev, victim]);
+        const nextExiled = [...exiledPieces, victim];
+        setExiledPieces(nextExiled);
 
         const nextPrio = getHighestPriorityEnemyCoords(nextBoard, enemyFaction);
         const rem = plus4Remaining - 1;
         if (rem <= 0 || nextPrio.tier === 4) {
           setPlus4Remaining(0);
-          endTurn(nextBoard, currentCard);
+          endTurn(nextBoard, currentCard, undefined, undefined, undefined, undefined, nextExiled);
         } else {
           setPlus4Remaining(rem);
           setBannerMsg(t('bannerEliminatedMore', { count: rem }));
+          if (mode === 'online') {
+            pushOnline({
+              boardFlat: flattenBoard(nextBoard),
+              exiledPieces: nextExiled,
+              plus4Remaining: rem,
+              bannerKey: 'bannerEliminatedMore',
+              bannerParams: { count: rem },
+            });
+          }
         }
       }
     }
@@ -1023,15 +2341,46 @@ export default function App() {
   const handleSelectWildColor = useCallback(
     (color: CardColor) => {
       sound.playSpecial();
-      if (currentCard) {
-        setCurrentCard({ ...currentCard, color });
+      const updatedCard = currentCard ? { ...currentCard, color } : null;
+      if (updatedCard) {
+        setCurrentCard(updatedCard);
       }
-      setWildTeleportPending(true);
-      setMovesRemaining(1);
-      setPhase('MOVE_PHASE');
-      setBannerMsg(t('bannerWildStep1'));
+
+      // Each of the 4 colors grants its corresponding promotion piece!
+      const rewardPiece: PieceType = WILD_COLOR_PIECE_MAP[color];
+      const placementSquares = getWildPlacementSquares(board, activeFaction);
+
+      if (placementSquares.length > 0) {
+        setPendingWildPieceType(rewardPiece);
+        setPhase('WILD_PLACE_PIECE_PHASE');
+        setBannerMsg(t('bannerWildPlacePiece', { piece: pieceLabel(rewardPiece) }));
+        if (mode === 'online') {
+          pushOnline({
+            currentCard: updatedCard,
+            pendingWildPieceType: rewardPiece,
+            phase: 'WILD_PLACE_PIECE_PHASE',
+            bannerKey: 'bannerWildPlacePiece',
+            bannerParams: { piece: pieceLabel(rewardPiece) },
+          });
+        }
+      } else {
+        setWildTeleportPending(true);
+        setMovesRemaining(1);
+        setPhase('MOVE_PHASE');
+        setBannerMsg(t('bannerWildStep1'));
+        if (mode === 'online') {
+          pushOnline({
+            currentCard: updatedCard,
+            wildTeleportPending: true,
+            movesRemaining: 1,
+            phase: 'MOVE_PHASE',
+            bannerKey: 'bannerWildStep1',
+            bannerParams: {},
+          });
+        }
+      }
     },
-    [currentCard, t]
+    [activeFaction, board, currentCard, mode, pieceLabel, pushOnline, t]
   );
 
   const handleSelectPlus4Mode = useCallback(
@@ -1043,24 +2392,60 @@ export default function App() {
           .filter((p) => p && p.faction === enemyFaction && p.type !== 'king').length;
         const quota = Math.min(4, nonKingCount);
         if (quota <= 0) {
-          setSkipOpponentTurns((s) => s + 1);
+          const nextSkip = skipOpponentTurns + 1;
+          setSkipOpponentTurns(nextSkip);
           setMovesRemaining(4);
           setPhase('MOVE_PHASE');
           setBannerMsg(t('bannerPlus4Action'));
+          if (mode === 'online') {
+            pushOnline({
+              skipOpponentTurns: nextSkip,
+              movesRemaining: 4,
+              phase: 'MOVE_PHASE',
+              bannerKey: 'bannerPlus4Action',
+              bannerParams: {},
+            });
+          }
           return;
         }
         setPlus4Remaining(quota);
         setPhase('PLUS4_ELIMINATE_PHASE');
         setBannerMsg(t('bannerPlus4Attack', { count: quota }));
+        if (mode === 'online') {
+          pushOnline({
+            plus4Remaining: quota,
+            phase: 'PLUS4_ELIMINATE_PHASE',
+            bannerKey: 'bannerPlus4Attack',
+            bannerParams: { count: quota },
+          });
+        }
       } else {
-        setSkipOpponentTurns((s) => s + 1);
+        const nextSkip = skipOpponentTurns + 1;
+        setSkipOpponentTurns(nextSkip);
         setMovesRemaining(4);
         setPhase('MOVE_PHASE');
         setBannerMsg(t('bannerPlus4Action'));
+        if (mode === 'online') {
+          pushOnline({
+            skipOpponentTurns: nextSkip,
+            movesRemaining: 4,
+            phase: 'MOVE_PHASE',
+            bannerKey: 'bannerPlus4Action',
+            bannerParams: {},
+          });
+        }
       }
     },
-    [board, enemyFaction, t]
+    [board, enemyFaction, mode, pushOnline, skipOpponentTurns, t]
   );
+
+  const handleOnlineResign = useCallback(() => {
+    if (mode !== 'online' || !onlineMatch || !authUser) return;
+    sound.playClick();
+    setIsPaused(false);
+    const winnerPid: PlayerId = myOnlineRole === 'p1' ? 'p2' : 'p1';
+    finishWithWin(winnerPid, 'bannerResignWin', board);
+  }, [authUser, board, finishWithWin, mode, myOnlineRole, onlineMatch]);
 
   // ---------- BOT AI TURN LOOP ----------
   const botTimerRef = useRef<number | null>(null);
@@ -1080,18 +2465,79 @@ export default function App() {
 
     botTimerRef.current = window.setTimeout(() => {
       if (phase === 'DRAW_PHASE') {
-        handleDrawCard();
+        sound.unlock();
+        let workingDeck = [...drawPile];
+        let workingDiscard = [...discardPile];
+        if (workingDeck.length === 0) {
+          if (workingDiscard.length === 0) {
+            workingDeck = createDeck();
+          } else {
+            workingDeck = shuffleCards(workingDiscard);
+            workingDiscard = [];
+            setDiscardPile([]);
+          }
+          sound.playShuffle();
+        }
+        const [drawn, ...rest] = workingDeck;
+        setDrawPile(rest);
+        setCurrentCard(drawn);
+        setCardFaceDown(true);
+        setPhase('CARD_REVEALING');
+        setBannerMsg(t('bannerDrawing', { name: playerLabel('p2') }));
+        sound.playDraw();
+        window.setTimeout(() => setCardFaceDown(false), 90);
+        window.setTimeout(() => resolveDrawnCard(drawn, rest, workingDiscard), 620);
       } else if (phase === 'WILD_COLOR_CHOICE') {
         handleSelectWildColor(chooseBotWildColor());
+      } else if (phase === 'WILD_PLACE_PIECE_PHASE') {
+        const squares = getWildPlacementSquares(board, activeFaction);
+        if (pendingWildPieceType && squares.length > 0) {
+          const dest = squares[Math.floor(Math.random() * squares.length)];
+          const nextBoard = cloneBoard(board);
+          nextBoard[dest.row][dest.col] = {
+            id: `wild-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            type: pendingWildPieceType,
+            faction: activeFaction,
+            pieceNumber: 1,
+            hasMoved: true,
+          };
+          sound.playSpecial();
+          setBoard(nextBoard);
+          setPendingWildPieceType(null);
+          setWildTeleportPending(true);
+          const step1Moves = getUnoChessLegalMoves(nextBoard, activeFaction, enPassantTarget, 1);
+          if (step1Moves.length > 0) {
+            setMovesRemaining(1);
+            setPhase('MOVE_PHASE');
+            setBannerMsg(t('bannerWildStep1'));
+          } else {
+            setMovesRemaining(0);
+            setPhase('WILD_TELEPORT_PHASE');
+            setBannerMsg(t('bannerWildStep2'));
+          }
+        } else {
+          setPendingWildPieceType(null);
+          setWildTeleportPending(true);
+          setMovesRemaining(1);
+          setPhase('MOVE_PHASE');
+        }
       } else if (phase === 'WILD_PLUS4_CHOICE') {
         handleSelectPlus4Mode(chooseBotPlus4Mode(board, enemyFaction));
       } else if (phase === 'MOVE_PHASE') {
+        const syncColor: CardColor | null =
+          isFirstMoveOfTurn &&
+          currentCard &&
+          currentCard.value !== 'wild' &&
+          currentCard.value !== 'wild-draw'
+            ? currentCard.color
+            : null;
         const botMove = chooseBotMove(
           board,
           activeFaction,
           enPassantTarget,
           movesRemaining,
-          botLevel
+          botLevel,
+          syncColor
         );
         if (botMove) {
           executeMove(botMove, 'queen', movesRemaining - 1);
@@ -1104,7 +2550,11 @@ export default function App() {
           const nextBoard = cloneBoard(board);
           const p = nextBoard[tp.from.row][tp.from.col];
           nextBoard[tp.from.row][tp.from.col] = null;
-          nextBoard[tp.to.row][tp.to.col] = p ? { ...p, hasMoved: true } : null;
+          const promoRow = activeFaction === 'white' ? 0 : 7;
+          const autoType = p && p.type === 'pawn' && tp.to.row === promoRow ? 'queen' : p?.type;
+          nextBoard[tp.to.row][tp.to.col] = p
+            ? { ...p, type: autoType ?? p.type, hasMoved: true }
+            : null;
           sound.playSpecial();
           setBoard(nextBoard);
           setWildTeleportPending(false);
@@ -1205,20 +2655,26 @@ export default function App() {
     board,
     botLevel,
     currentCard,
+    discardPile,
+    drawPile,
     enPassantTarget,
     endTurn,
     enemyFaction,
     executeMove,
-    handleDrawCard,
     handleSelectPlus4Mode,
     handleSelectWildColor,
+    isFirstMoveOfTurn,
     isPaused,
     mode,
     movesRemaining,
     ownCapturedPieces,
+    pendingWildPieceType,
     phase,
+    playerLabel,
     plus2Remaining,
     plus4Remaining,
+    resolveDrawnCard,
+    t,
   ]);
 
   const enemyHasAttackTargets = useMemo(() => {
@@ -1232,12 +2688,14 @@ export default function App() {
   const bottomPlayerId: PlayerId = p1Faction === bottomFaction ? 'p1' : 'p2';
   const topTimeMs = topPlayerId === 'p1' ? p1TimeMs : p2TimeMs;
   const bottomTimeMs = bottomPlayerId === 'p1' ? p1TimeMs : p2TimeMs;
+  const topElo = playerEloForId(topPlayerId);
+  const bottomElo = playerEloForId(bottomPlayerId);
 
   const topCaptured = topFaction === 'white' ? capturedBlackPieces : capturedWhitePieces;
   const bottomCaptured = bottomFaction === 'white' ? capturedBlackPieces : capturedWhitePieces;
 
-  // In 2-player physical tabletop mode: when it is the top side's turn (Black by default),
-  // move the deck console to the TOP (facing the opposite player!) and orient pieces 180°.
+  // In 2-player physical tabletop mode: when it is the top side's turn,
+  // move the deck console to the TOP and orient pieces 180°.
   const isTabletopTopTurn =
     mode === 'local' && localPlayStyle === 'tabletop' && activeFaction === topFaction;
 
@@ -1251,7 +2709,7 @@ export default function App() {
       {/* Interactive Draw Deck using deck.png */}
       <button
         type="button"
-        disabled={phase !== 'DRAW_PHASE' || !isHumanTurn || isPaused}
+        disabled={phase !== 'DRAW_PHASE' || !isHumanTurn || (isPaused && mode !== 'online')}
         onClick={handleDrawCard}
         aria-label={t('drawBtnPrompt')}
         className={`group relative flex shrink-0 flex-col items-center justify-center rounded-2xl p-1 transition ${
@@ -1295,6 +2753,11 @@ export default function App() {
                   <span className="inline-flex items-center gap-1 rounded-lg border border-slate-950 bg-emerald-400 px-2 py-0.5 text-slate-950">
                     <Sparkles className="h-3 w-3" />
                     {t('movesCounter', { count: movesRemaining })}
+                  </span>
+                )}
+                {phase === 'WILD_PLACE_PIECE_PHASE' && pendingWildPieceType && (
+                  <span className="inline-flex items-center gap-1 rounded-lg border border-slate-950 bg-emerald-400 px-2 py-0.5 text-slate-950">
+                    + {pieceLabel(pendingWildPieceType)}
                   </span>
                 )}
                 {phase === 'WILD_TELEPORT_PHASE' && (
@@ -1375,7 +2838,29 @@ export default function App() {
       />
 
       <div className="mx-auto flex min-h-[100dvh] w-full max-w-[490px] flex-col">
-        {phase === 'TITLE_MENU' ? (
+        {showOnlineLobby ? (
+          <OnlineLobbyView
+            authUser={authUser}
+            authReady={authReady}
+            profile={myProfile}
+            profileLoading={profileLoading}
+            pendingJoinMatchId={pendingJoinMatchId}
+            onClearPendingJoin={() => {
+              setPendingJoinMatchId(null);
+              if (typeof window !== 'undefined' && window.location.search.includes('join=')) {
+                const url = new URL(window.location.href);
+                url.searchParams.delete('join');
+                window.history.replaceState({}, '', url.pathname + url.search);
+              }
+            }}
+            onProfileSaved={(prof) => setMyProfile(prof)}
+            onEnterMatch={handleEnterOnlineMatch}
+            onBack={() => {
+              setShowOnlineLobby(false);
+              setPhase('TITLE_MENU');
+            }}
+          />
+        ) : phase === 'TITLE_MENU' ? (
           <StartScreen
             mode={mode}
             botLevel={botLevel}
@@ -1403,6 +2888,11 @@ export default function App() {
               setTimeControl(tc);
             }}
             onStartGame={startNewGame}
+            onOpenOnlineLobby={() => {
+              sound.playClick();
+              setMode('online');
+              setShowOnlineLobby(true);
+            }}
             onOpenGuide={() => {
               sound.playClick();
               setIsGuideOpen(true);
@@ -1436,7 +2926,7 @@ export default function App() {
                     : 'bg-slate-800 text-white'
                 }`}
               >
-                <span>
+                <span className="max-w-[130px] truncate">
                   {playerLabel(activePlayer)} ·{' '}
                   {activeFaction === 'white' ? t('whitePieces') : t('blackPieces')}
                 </span>
@@ -1455,7 +2945,21 @@ export default function App() {
               </button>
             </header>
 
-            {/* TOP DECK ZONE (shown when it's Black/Top player's turn in 2-player tabletop mode!) */}
+            {joinToastMsg && (
+              <div className="mt-1.5 flex items-center justify-center gap-2 rounded-xl border-2 border-emerald-400 bg-emerald-950/90 px-3 py-1.5 text-xs font-extrabold text-emerald-200 shadow">
+                <Sparkles className="h-4 w-4 shrink-0 text-emerald-300" />
+                <span>{joinToastMsg}</span>
+              </div>
+            )}
+
+            {duelToastMsg && (
+              <div className="mt-1.5 flex items-center justify-center gap-2 rounded-xl border-2 border-rose-400 bg-rose-950/90 px-3 py-1.5 text-xs font-extrabold text-rose-100 shadow">
+                <Sparkles className="h-4 w-4 shrink-0 text-rose-300" />
+                <span>{duelToastMsg}</span>
+              </div>
+            )}
+
+            {/* TOP DECK ZONE (2-player tabletop mode) */}
             {isTabletopTopTurn && (
               <div className="mt-1.5">
                 {renderDeckConsole(true)}
@@ -1469,17 +2973,23 @@ export default function App() {
                 isTabletopTopTurn ? 'rotate-180' : ''
               }`}
             >
-              <div className="flex items-center gap-2">
+              <div className="flex min-w-0 items-center gap-1.5">
                 <span
-                  className={`h-3 w-3 rounded-full border ${
+                  className={`h-3 w-3 shrink-0 rounded-full border ${
                     topFaction === 'white'
                       ? 'border-slate-950 bg-amber-50'
                       : 'border-slate-300 bg-slate-900'
                   }`}
                 />
-                <span className="font-extrabold text-white">
+                <span className="truncate font-extrabold text-white">
                   {playerLabel(topPlayerId)}
                 </span>
+                {topElo !== null && (
+                  <span className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-extrabold text-amber-300 tabular-nums">
+                    <Trophy className="h-2.5 w-2.5" />
+                    {topElo}
+                  </span>
+                )}
                 {activePlayer === topPlayerId && skipOpponentTurns > 0 && (
                   <span className="flex items-center gap-1 text-[11px] font-bold text-amber-300">
                     <Ban className="h-3 w-3" /> {t('blockActive')}
@@ -1492,7 +3002,7 @@ export default function App() {
                 )}
               </div>
 
-              <div className="flex items-center gap-2 text-[11px] font-bold text-slate-300 tabular-nums">
+              <div className="flex shrink-0 items-center gap-2 text-[11px] font-bold text-slate-300 tabular-nums">
                 <span>{t('capturedCount', { count: topCaptured.length })}</span>
                 {exiledPieces.length > 0 && (
                   <span className="text-rose-300">
@@ -1536,7 +3046,7 @@ export default function App() {
               checkedFaction={checkedFaction}
               disabled={
                 !isHumanTurn ||
-                isPaused ||
+                (isPaused && mode !== 'online') ||
                 phase === 'REVERSING' ||
                 phase === 'CARD_REVEALING'
               }
@@ -1546,17 +3056,23 @@ export default function App() {
             {/* 5. Bottom Player Strip */}
             <div className="mt-1.5 rounded-2xl border-2 border-slate-950 bg-slate-900/85 px-3 py-1.5 shadow-md backdrop-blur-sm">
               <div className="flex items-center justify-between text-xs">
-                <div className="flex items-center gap-2">
+                <div className="flex min-w-0 items-center gap-1.5">
                   <span
-                    className={`h-3 w-3 rounded-full border ${
+                    className={`h-3 w-3 shrink-0 rounded-full border ${
                       bottomFaction === 'white'
                         ? 'border-slate-950 bg-amber-50'
                         : 'border-slate-300 bg-slate-900'
                     }`}
                   />
-                  <span className="font-extrabold text-white">
+                  <span className="truncate font-extrabold text-white">
                     {playerLabel(bottomPlayerId)}
                   </span>
+                  {bottomElo !== null && (
+                    <span className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-extrabold text-amber-300 tabular-nums">
+                      <Trophy className="h-2.5 w-2.5" />
+                      {bottomElo}
+                    </span>
+                  )}
                   {checkedFaction === bottomFaction && (
                     <span className="flex items-center gap-1 font-extrabold text-rose-400">
                       <ShieldAlert className="h-3.5 w-3.5" /> {t('checkBadge')}
@@ -1564,7 +3080,7 @@ export default function App() {
                   )}
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex shrink-0 items-center gap-2">
                   <span className="text-[11px] font-bold text-slate-300 tabular-nums">
                     {t('capturedCount', { count: bottomCaptured.length })}
                   </span>
@@ -1586,13 +3102,16 @@ export default function App() {
               </div>
             </div>
 
-            {/* BOTTOM DECK ZONE (shown when it's White/Bottom player's turn or Bot/Pass mode) */}
+            {/* BOTTOM DECK ZONE */}
             {!isTabletopTopTurn && (
               <div className="mt-1.5">
                 {renderRecoveryTray(false)}
                 {renderDeckConsole(false)}
               </div>
             )}
+
+            {/* 6. Bottom Move History & PGN Bar */}
+            <MoveHistoryBar entries={moveHistory} onDownloadPgn={handleDownloadPgn} />
           </div>
         )}
       </div>
@@ -1600,6 +3119,7 @@ export default function App() {
       {/* Modals */}
       <PauseModal
         isOpen={isPaused}
+        isOnline={mode === 'online'}
         musicVolume={audioState.musicVolume}
         sfxVolume={audioState.sfxVolume}
         musicMuted={audioState.musicMuted}
@@ -1633,12 +3153,19 @@ export default function App() {
         onRestart={() => {
           startNewGame();
         }}
+        onResign={handleOnlineResign}
         onExitToMenu={() => {
           sound.playClick();
           sound.stopMusic();
           syncAudioState();
           setIsPaused(false);
-          setPhase('TITLE_MENU');
+          if (mode === 'online') {
+            setOnlineMatchId(null);
+            setOnlineMatch(null);
+            setShowOnlineLobby(true);
+          } else {
+            setPhase('TITLE_MENU');
+          }
         }}
       />
 
@@ -1652,6 +3179,7 @@ export default function App() {
 
       <WildColorModal
         isOpen={phase === 'WILD_COLOR_CHOICE' && isHumanTurn}
+        faction={activeFaction}
         onSelectColor={handleSelectWildColor}
       />
 
@@ -1662,7 +3190,7 @@ export default function App() {
       />
 
       <PromotionModal
-        isOpen={phase === 'PROMOTION_CHOICE' && pendingPromotion !== null}
+        isOpen={phase === 'PROMOTION_CHOICE' && pendingPromotion !== null && isHumanTurn}
         faction={pendingPromotion?.faction ?? activeFaction}
         pieceNumber={
           pendingPromotion
@@ -1678,12 +3206,23 @@ export default function App() {
         reason={gameOverReason}
         turnsPlayed={turnsPlayed}
         elapsedSeconds={elapsedSeconds}
+        isOnline={mode === 'online'}
+        eloDelta={onlineEloResult?.delta ?? null}
+        didWinOnline={onlineEloResult?.didWin ?? false}
+        onDownloadPgn={handleDownloadPgn}
         onPlayAgain={startNewGame}
         onMainMenu={() => {
           sound.playClick();
           sound.stopMusic();
           syncAudioState();
-          setPhase('TITLE_MENU');
+          if (mode === 'online') {
+            setOnlineMatchId(null);
+            setOnlineMatch(null);
+            setPhase('TITLE_MENU');
+            setShowOnlineLobby(true);
+          } else {
+            setPhase('TITLE_MENU');
+          }
         }}
       />
     </div>

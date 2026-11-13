@@ -30,11 +30,42 @@ export type Faction = 'white' | 'black';
 
 export type PlayerId = 'p1' | 'p2';
 
-export type GameMode = 'bot' | 'local';
+export type GameMode = 'bot' | 'local' | 'online';
 
 export type LocalPlayStyle = 'tabletop' | 'pass';
 
+export type PreferredColor = 'random' | 'white' | 'black';
+
 export type BotLevel = number; // 1..10 intelligence level
+
+export const WILD_COLOR_PIECE_MAP: Record<CardColor, PieceType> = {
+  red: 'queen',
+  blue: 'rook',
+  green: 'bishop',
+  yellow: 'knight',
+};
+
+export const PIECE_BASE_COLOR_MAP: Record<PieceType, CardColor> = {
+  rook: 'red',
+  queen: 'red',
+  bishop: 'blue',
+  knight: 'blue',
+  pawn: 'green',
+  king: 'yellow',
+};
+
+export interface MoveHistoryEntry {
+  ply: number;
+  turnNumber: number;
+  faction: Faction;
+  san: string;
+  comment?: string;
+  isChessMove: boolean;
+  cardColor?: CardColor | '';
+  cardValue?: CardValue | '';
+  syncBonus?: boolean;
+  duelEvent?: boolean;
+}
 
 export type TimeControlCategory = 'unlimited' | 'bullet' | 'blitz' | 'rapid' | 'classical';
 
@@ -90,6 +121,7 @@ export type GamePhase =
   | 'CARD_REVEALING'
   | 'MOVE_PHASE'
   | 'WILD_COLOR_CHOICE'
+  | 'WILD_PLACE_PIECE_PHASE'
   | 'WILD_TELEPORT_PHASE'
   | 'WILD_PLUS4_CHOICE'
   | 'PLUS2_RECOVER_PHASE'
@@ -110,6 +142,80 @@ export interface GameSnapshot {
   capturedByBlack: ChessPiece[]; // White pieces captured by Black
   exiledPieces: ChessPiece[]; // Permanently removed by Wild +4 Attack
   enPassantTarget: Coord | null;
+}
+
+export interface PlayerProfile {
+  uid: string;
+  nickname: string;
+  elo: number;
+  wins: number;
+  losses: number;
+}
+
+export interface LobbyChallenge {
+  id: string;
+  creatorUid: string;
+  creatorNickname: string;
+  creatorElo: number;
+  timeControlId: string;
+  timeControlLabel: string;
+  minutes: number;
+  increment: number;
+  preferredColor: PreferredColor;
+  status: 'open' | 'matched' | 'cancelled';
+  matchedMatchId: string;
+  opponentUid: string;
+}
+
+export interface OnlineMatchDoc {
+  id: string;
+  inviteType: 'lobby' | 'magic_link';
+  status: 'waiting' | 'active' | 'finished';
+  hostUid: string;
+  hostNickname: string;
+  hostElo: number;
+  guestUid: string;
+  guestNickname: string;
+  guestElo: number;
+  timeControlId: string;
+  timeControlLabel: string;
+  minutes: number;
+  increment: number;
+  p1Uid: string;
+  p2Uid: string;
+  p1Faction: Faction;
+  activePlayer: PlayerId;
+  p1TimeMs: number;
+  p2TimeMs: number;
+  stateVersion: number;
+  turnsPlayed: number;
+  boardFlat: (ChessPiece | null)[];
+  drawPile: Card[];
+  discardPile: Card[];
+  capturedWhitePieces: ChessPiece[];
+  capturedBlackPieces: ChessPiece[];
+  exiledPieces: ChessPiece[];
+  enPassantTarget: Coord | null;
+  currentCard: Card | null;
+  cardFaceDown: boolean;
+  phase: GamePhase;
+  movesRemaining: number;
+  skipOpponentTurns: number;
+  wildTeleportPending: boolean;
+  plus2Remaining: number;
+  plus4Remaining: number;
+  pendingWildPieceType: string;
+  pendingPromotion: PendingPromotion | null;
+  bannerKey: string;
+  bannerParams?: Record<string, string | number>;
+  winnerUid: string;
+  winReasonKey: string;
+  eloDelta: number;
+  lastChainColor: CardColor | '';
+  lastChainBy: PlayerId | '';
+  isFirstMoveOfTurn: boolean;
+  moveHistory: MoveHistoryEntry[];
+  lastDuelText: string;
 }
 
 export const PIECE_LABELS_ES: Record<PieceType, string> = {

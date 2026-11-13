@@ -1,0 +1,376 @@
+{
+  "entities": {
+    "PlayerProfile": {
+      "title": "PlayerProfile",
+      "description": "Public online player profile linked to user UID with nickname and Elo rating (no PII).",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "nickname": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 20
+        },
+        "elo": {
+          "type": "number"
+        },
+        "wins": {
+          "type": "number"
+        },
+        "losses": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "nickname", "elo", "wins", "losses", "createdAt", "updatedAt"]
+    },
+    "Challenge": {
+      "title": "Challenge",
+      "description": "Open matchmaking challenge posted by a real player in the online lobby.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "creatorUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "creatorNickname": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 20
+        },
+        "creatorElo": {
+          "type": "number"
+        },
+        "timeControlId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "timeControlLabel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20
+        },
+        "minutes": {
+          "type": "number"
+        },
+        "increment": {
+          "type": "number"
+        },
+        "preferredColor": {
+          "type": "string",
+          "enum": ["random", "white", "black"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["open", "matched", "cancelled"]
+        },
+        "matchedMatchId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "opponentUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "creatorUid",
+        "creatorNickname",
+        "creatorElo",
+        "timeControlId",
+        "timeControlLabel",
+        "minutes",
+        "increment",
+        "preferredColor",
+        "status",
+        "matchedMatchId",
+        "opponentUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "OnlineMatch": {
+      "title": "OnlineMatch",
+      "description": "Real-time UnoChess online match synchronized between two players (via lobby or magic invite link).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "inviteType": {
+          "type": "string",
+          "enum": ["lobby", "magic_link"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["waiting", "active", "finished"]
+        },
+        "hostUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "hostNickname": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 20
+        },
+        "hostElo": {
+          "type": "number"
+        },
+        "guestUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "guestNickname": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "guestElo": {
+          "type": "number"
+        },
+        "timeControlId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "timeControlLabel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20
+        },
+        "minutes": {
+          "type": "number"
+        },
+        "increment": {
+          "type": "number"
+        },
+        "p1Uid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "p2Uid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "p1Faction": {
+          "type": "string",
+          "enum": ["white", "black"]
+        },
+        "activePlayer": {
+          "type": "string",
+          "enum": ["p1", "p2"]
+        },
+        "p1TimeMs": {
+          "type": "number"
+        },
+        "p2TimeMs": {
+          "type": "number"
+        },
+        "stateVersion": {
+          "type": "number"
+        },
+        "turnsPlayed": {
+          "type": "number"
+        },
+        "boardFlat": {
+          "type": "array"
+        },
+        "drawPile": {
+          "type": "array"
+        },
+        "discardPile": {
+          "type": "array"
+        },
+        "capturedWhitePieces": {
+          "type": "array"
+        },
+        "capturedBlackPieces": {
+          "type": "array"
+        },
+        "exiledPieces": {
+          "type": "array"
+        },
+        "enPassantTarget": {
+          "type": "object"
+        },
+        "currentCard": {
+          "type": "object"
+        },
+        "cardFaceDown": {
+          "type": "boolean"
+        },
+        "phase": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "movesRemaining": {
+          "type": "number"
+        },
+        "skipOpponentTurns": {
+          "type": "number"
+        },
+        "wildTeleportPending": {
+          "type": "boolean"
+        },
+        "plus2Remaining": {
+          "type": "number"
+        },
+        "plus4Remaining": {
+          "type": "number"
+        },
+        "pendingWildPieceType": {
+          "type": "string",
+          "maxLength": 16
+        },
+        "pendingPromotion": {
+          "type": "object"
+        },
+        "bannerKey": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "bannerParams": {
+          "type": "object"
+        },
+        "winnerUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "winReasonKey": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "eloDelta": {
+          "type": "number"
+        },
+        "lastChainColor": {
+          "type": "string",
+          "enum": ["", "red", "blue", "green", "yellow"]
+        },
+        "lastChainBy": {
+          "type": "string",
+          "enum": ["", "p1", "p2"]
+        },
+        "isFirstMoveOfTurn": {
+          "type": "boolean"
+        },
+        "moveHistory": {
+          "type": "array"
+        },
+        "lastDuelText": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "joinedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "inviteType",
+        "status",
+        "hostUid",
+        "hostNickname",
+        "hostElo",
+        "guestUid",
+        "guestNickname",
+        "guestElo",
+        "timeControlId",
+        "timeControlLabel",
+        "minutes",
+        "increment",
+        "p1Uid",
+        "p2Uid",
+        "p1Faction",
+        "activePlayer",
+        "p1TimeMs",
+        "p2TimeMs",
+        "stateVersion",
+        "turnsPlayed",
+        "boardFlat",
+        "drawPile",
+        "discardPile",
+        "capturedWhitePieces",
+        "capturedBlackPieces",
+        "exiledPieces",
+        "cardFaceDown",
+        "phase",
+        "movesRemaining",
+        "skipOpponentTurns",
+        "wildTeleportPending",
+        "plus2Remaining",
+        "plus4Remaining",
+        "pendingWildPieceType",
+        "bannerKey",
+        "winnerUid",
+        "winReasonKey",
+        "eloDelta",
+        "lastChainColor",
+        "lastChainBy",
+        "isFirstMoveOfTurn",
+        "moveHistory",
+        "lastDuelText",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/players/{uid}": {
+      "schema": { "$ref": "#/entities/PlayerProfile" },
+      "description": "Public player identity (UID + nickname + Elo + W/L record)."
+    },
+    "/challenges/{challengeId}": {
+      "schema": { "$ref": "#/entities/Challenge" },
+      "description": "Real-time open lobby challenges created and accepted by human players."
+    },
+    "/matches/{matchId}": {
+      "schema": { "$ref": "#/entities/OnlineMatch" },
+      "description": "Authoritative real-time state for active online matches and magic invite links."
+    }
+  }
+}

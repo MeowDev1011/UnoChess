@@ -63,6 +63,42 @@ export const CardGuideModal: React.FC<CardGuideModalProps> = ({ isOpen, onClose 
             </div>
           ))}
 
+          {/* New Color Rules: Color Bases, Rule 1 (Color Sync), Rule 2 (Color Duel) */}
+          <div className="rounded-2xl border-2 border-sky-400/60 bg-sky-950/35 p-3.5">
+            <h3 className="text-sm font-extrabold text-sky-300">
+              {t('guideColorBasesTitle')}
+            </h3>
+            <div className="mt-2 grid grid-cols-2 gap-1.5 text-xs font-bold text-slate-100">
+              <div className="flex items-center gap-1.5 rounded-lg bg-slate-900/70 px-2 py-1">
+                <span className="h-3 w-3 shrink-0 rounded-full bg-red-500" />
+                <span>{t('guideColorBasesRed')}</span>
+              </div>
+              <div className="flex items-center gap-1.5 rounded-lg bg-slate-900/70 px-2 py-1">
+                <span className="h-3 w-3 shrink-0 rounded-full bg-sky-500" />
+                <span>{t('guideColorBasesBlue')}</span>
+              </div>
+              <div className="flex items-center gap-1.5 rounded-lg bg-slate-900/70 px-2 py-1">
+                <span className="h-3 w-3 shrink-0 rounded-full bg-emerald-500" />
+                <span>{t('guideColorBasesGreen')}</span>
+              </div>
+              <div className="flex items-center gap-1.5 rounded-lg bg-slate-900/70 px-2 py-1">
+                <span className="h-3 w-3 shrink-0 rounded-full bg-amber-400" />
+                <span>{t('guideColorBasesYellow')}</span>
+              </div>
+            </div>
+
+            <div className="mt-3 space-y-2.5 text-xs leading-relaxed text-slate-200">
+              <div className="rounded-xl border border-amber-400/40 bg-slate-900/70 p-2.5">
+                <div className="font-extrabold text-amber-300">{t('guideRule1Title')}</div>
+                <p className="mt-1">{t('guideRule1Desc')}</p>
+              </div>
+              <div className="rounded-xl border border-rose-400/40 bg-slate-900/70 p-2.5">
+                <div className="font-extrabold text-rose-300">{t('guideRule2Title')}</div>
+                <p className="mt-1">{t('guideRule2Desc')}</p>
+              </div>
+            </div>
+          </div>
+
           <div className="rounded-2xl border-2 border-amber-400/50 bg-amber-950/35 p-3.5">
             <h3 className="text-sm font-extrabold text-amber-300">{t('safetyTitle')}</h3>
             <ul className="mt-2 space-y-1.5 text-xs leading-relaxed text-slate-200">

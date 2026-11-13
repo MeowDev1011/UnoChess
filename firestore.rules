@@ -1,0 +1,344 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ---------- Reusable Hardened Primitives ----------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidTimestamp(ts) {
+      return ts is timestamp;
+    }
+
+    // ---------- Validation Blueprints ----------
+    function isValidPlayer(data) {
+      return data.keys().hasAll(['uid', 'nickname', 'elo', 'wins', 'losses', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'nickname', 'elo', 'wins', 'losses', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.nickname is string && data.nickname.size() >= 2 && data.nickname.size() <= 20
+        && data.elo is number && data.elo >= 100 && data.elo <= 4000
+        && data.wins is number && data.wins >= 0 && data.wins <= 100000
+        && data.losses is number && data.losses >= 0 && data.losses <= 100000
+        && isValidTimestamp(data.createdAt)
+        && isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidChallenge(data) {
+      return data.keys().hasAll([
+          'id', 'creatorUid', 'creatorNickname', 'creatorElo',
+          'timeControlId', 'timeControlLabel', 'minutes', 'increment',
+          'preferredColor', 'status', 'matchedMatchId', 'opponentUid',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'creatorUid', 'creatorNickname', 'creatorElo',
+          'timeControlId', 'timeControlLabel', 'minutes', 'increment',
+          'preferredColor', 'status', 'matchedMatchId', 'opponentUid',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.creatorUid)
+        && data.creatorNickname is string && data.creatorNickname.size() >= 2 && data.creatorNickname.size() <= 20
+        && data.creatorElo is number && data.creatorElo >= 100 && data.creatorElo <= 4000
+        && data.timeControlId is string && data.timeControlId.size() >= 1 && data.timeControlId.size() <= 32
+        && data.timeControlLabel is string && data.timeControlLabel.size() >= 1 && data.timeControlLabel.size() <= 20
+        && data.minutes is number && data.minutes >= 0 && data.minutes <= 180
+        && data.increment is number && data.increment >= 0 && data.increment <= 120
+        && data.preferredColor in ['random', 'white', 'black']
+        && data.status in ['open', 'matched', 'cancelled']
+        && data.matchedMatchId is string && data.matchedMatchId.size() <= 128
+        && data.opponentUid is string && data.opponentUid.size() <= 128
+        && isValidTimestamp(data.createdAt)
+        && isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidMatch(data) {
+      return data.keys().hasAll([
+          'id', 'inviteType', 'status',
+          'hostUid', 'hostNickname', 'hostElo',
+          'guestUid', 'guestNickname', 'guestElo',
+          'timeControlId', 'timeControlLabel', 'minutes', 'increment',
+          'p1Uid', 'p2Uid', 'p1Faction', 'activePlayer',
+          'p1TimeMs', 'p2TimeMs', 'stateVersion', 'turnsPlayed',
+          'boardFlat', 'drawPile', 'discardPile',
+          'capturedWhitePieces', 'capturedBlackPieces', 'exiledPieces',
+          'cardFaceDown', 'phase', 'movesRemaining', 'skipOpponentTurns',
+          'wildTeleportPending', 'plus2Remaining', 'plus4Remaining',
+          'pendingWildPieceType', 'bannerKey', 'winnerUid', 'winReasonKey', 'eloDelta',
+          'lastChainColor', 'lastChainBy', 'isFirstMoveOfTurn', 'moveHistory', 'lastDuelText',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'inviteType', 'status',
+          'hostUid', 'hostNickname', 'hostElo',
+          'guestUid', 'guestNickname', 'guestElo',
+          'timeControlId', 'timeControlLabel', 'minutes', 'increment',
+          'p1Uid', 'p2Uid', 'p1Faction', 'activePlayer',
+          'p1TimeMs', 'p2TimeMs', 'stateVersion', 'turnsPlayed',
+          'boardFlat', 'drawPile', 'discardPile',
+          'capturedWhitePieces', 'capturedBlackPieces', 'exiledPieces',
+          'enPassantTarget', 'currentCard', 'cardFaceDown',
+          'phase', 'movesRemaining', 'skipOpponentTurns',
+          'wildTeleportPending', 'plus2Remaining', 'plus4Remaining',
+          'pendingWildPieceType', 'pendingPromotion',
+          'bannerKey', 'bannerParams',
+          'winnerUid', 'winReasonKey', 'eloDelta',
+          'lastChainColor', 'lastChainBy', 'isFirstMoveOfTurn', 'moveHistory', 'lastDuelText',
+          'joinedAt', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.inviteType in ['lobby', 'magic_link']
+        && data.status in ['waiting', 'active', 'finished']
+        && isValidId(data.hostUid)
+        && data.hostNickname is string && data.hostNickname.size() >= 2 && data.hostNickname.size() <= 20
+        && data.hostElo is number && data.hostElo >= 100 && data.hostElo <= 4000
+        && data.guestUid is string && data.guestUid.size() <= 128
+        && data.guestNickname is string && data.guestNickname.size() <= 20
+        && data.guestElo is number && data.guestElo >= 0 && data.guestElo <= 4000
+        && data.timeControlId is string && data.timeControlId.size() >= 1 && data.timeControlId.size() <= 32
+        && data.timeControlLabel is string && data.timeControlLabel.size() >= 1 && data.timeControlLabel.size() <= 20
+        && data.minutes is number && data.minutes >= 0 && data.minutes <= 180
+        && data.increment is number && data.increment >= 0 && data.increment <= 120
+        && isValidId(data.p1Uid)
+        && data.p2Uid is string && data.p2Uid.size() <= 128
+        && data.p1Faction in ['white', 'black']
+        && data.activePlayer in ['p1', 'p2']
+        && data.p1TimeMs is number && data.p1TimeMs >= 0 && data.p1TimeMs <= 10800000
+        && data.p2TimeMs is number && data.p2TimeMs >= 0 && data.p2TimeMs <= 10800000
+        && data.stateVersion is number && data.stateVersion >= 0
+        && data.turnsPlayed is number && data.turnsPlayed >= 1
+        && data.boardFlat is list && data.boardFlat.size() == 64
+        && data.drawPile is list && data.drawPile.size() <= 150
+        && data.discardPile is list && data.discardPile.size() <= 150
+        && data.capturedWhitePieces is list && data.capturedWhitePieces.size() <= 32
+        && data.capturedBlackPieces is list && data.capturedBlackPieces.size() <= 32
+        && data.exiledPieces is list && data.exiledPieces.size() <= 32
+        && data.cardFaceDown is bool
+        && data.phase is string && data.phase.size() >= 1 && data.phase.size() <= 40
+        && data.movesRemaining is number && data.movesRemaining >= 0 && data.movesRemaining <= 20
+        && data.skipOpponentTurns is number && data.skipOpponentTurns >= 0 && data.skipOpponentTurns <= 10
+        && data.wildTeleportPending is bool
+        && data.plus2Remaining is number && data.plus2Remaining >= 0 && data.plus2Remaining <= 4
+        && data.plus4Remaining is number && data.plus4Remaining >= 0 && data.plus4Remaining <= 4
+        && data.pendingWildPieceType is string && data.pendingWildPieceType.size() <= 16
+        && data.bannerKey is string && data.bannerKey.size() <= 80
+        && data.winnerUid is string && data.winnerUid.size() <= 128
+        && data.winReasonKey is string && data.winReasonKey.size() <= 80
+        && data.eloDelta is number && data.eloDelta >= 0 && data.eloDelta <= 200
+        && data.lastChainColor in ['', 'red', 'blue', 'green', 'yellow']
+        && data.lastChainBy in ['', 'p1', 'p2']
+        && data.isFirstMoveOfTurn is bool
+        && data.moveHistory is list && data.moveHistory.size() <= 500
+        && (data.moveHistory.size() == 0 || data.moveHistory[0] is map)
+        && data.lastDuelText is string && data.lastDuelText.size() <= 160
+        && isValidTimestamp(data.createdAt)
+        && isValidTimestamp(data.updatedAt);
+    }
+
+    // ---------- /players/{uid} ----------
+    match /players/{uid} {
+      allow get: if isSignedIn() && isValidId(uid);
+      allow list: if false;
+
+      allow create: if isSignedIn()
+        && isValidId(uid)
+        && uid == request.auth.uid
+        && isValidPlayer(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().elo == 1200
+        && incoming().wins == 0
+        && incoming().losses == 0
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn()
+        && isValidId(uid)
+        && isValidPlayer(incoming())
+        && uid == request.auth.uid
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly(['nickname', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['elo', 'wins', 'losses', 'updatedAt'])
+        );
+
+      allow delete: if false;
+    }
+
+    // ---------- /challenges/{challengeId} ----------
+    match /challenges/{challengeId} {
+      allow get: if isSignedIn() && isValidId(challengeId);
+      allow list: if isSignedIn()
+        && (
+          existing().status == 'open'
+          || existing().creatorUid == request.auth.uid
+          || existing().opponentUid == request.auth.uid
+        );
+
+      allow create: if isSignedIn()
+        && isValidId(challengeId)
+        && isValidChallenge(incoming())
+        && incoming().id == challengeId
+        && incoming().creatorUid == request.auth.uid
+        && incoming().status == 'open'
+        && incoming().matchedMatchId == ''
+        && incoming().opponentUid == ''
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn()
+        && isValidId(challengeId)
+        && isValidChallenge(incoming())
+        && existing().status == 'open'
+        && incoming().id == existing().id
+        && incoming().creatorUid == existing().creatorUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Creator cancels own open challenge
+          (
+            existing().creatorUid == request.auth.uid
+            && incoming().status == 'cancelled'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+          ||
+          // Action: Another player accepts open challenge and atomically creates match
+          (
+            existing().creatorUid != request.auth.uid
+            && incoming().status == 'matched'
+            && incoming().opponentUid == request.auth.uid
+            && isValidId(incoming().matchedMatchId)
+            && existsAfter(/databases/$(database)/documents/matches/$(incoming().matchedMatchId))
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'opponentUid', 'matchedMatchId', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isSignedIn()
+        && isValidId(challengeId)
+        && existing().creatorUid == request.auth.uid
+        && existing().status == 'open';
+    }
+
+    // ---------- /matches/{matchId} ----------
+    match /matches/{matchId} {
+      allow get: if isSignedIn()
+        && isValidId(matchId)
+        && (
+          existing().status == 'waiting'
+          || existing().hostUid == request.auth.uid
+          || existing().guestUid == request.auth.uid
+        );
+
+      allow list: if isSignedIn()
+        && (
+          existing().hostUid == request.auth.uid
+          || existing().guestUid == request.auth.uid
+        );
+
+      allow create: if isSignedIn()
+        && isValidId(matchId)
+        && isValidMatch(incoming())
+        && incoming().id == matchId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Host creates a waiting magic-link match
+          (
+            incoming().inviteType == 'magic_link'
+            && incoming().status == 'waiting'
+            && incoming().hostUid == request.auth.uid
+            && incoming().p1Uid == request.auth.uid
+            && incoming().guestUid == ''
+            && incoming().p2Uid == ''
+          )
+          ||
+          // Action: Challenger accepts a lobby challenge and creates an active match
+          (
+            incoming().inviteType == 'lobby'
+            && incoming().status == 'active'
+            && incoming().guestUid == request.auth.uid
+            && incoming().p2Uid == request.auth.uid
+            && incoming().hostUid != request.auth.uid
+            && incoming().p1Uid == incoming().hostUid
+          )
+        );
+
+      allow update: if isSignedIn()
+        && isValidId(matchId)
+        && isValidMatch(incoming())
+        && existing().status != 'finished'
+        && incoming().id == existing().id
+        && incoming().inviteType == existing().inviteType
+        && incoming().hostUid == existing().hostUid
+        && incoming().p1Uid == existing().p1Uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Friend joins via magic link
+          (
+            existing().status == 'waiting'
+            && existing().inviteType == 'magic_link'
+            && request.auth.uid != existing().hostUid
+            && incoming().status == 'active'
+            && incoming().guestUid == request.auth.uid
+            && incoming().p2Uid == request.auth.uid
+            && isValidTimestamp(incoming().joinedAt)
+            && incoming().joinedAt == request.time
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'guestUid', 'guestNickname', 'guestElo',
+              'p2Uid', 'joinedAt', 'updatedAt'
+            ])
+          )
+          ||
+          // Action: Host cancels waiting magic link
+          (
+            existing().status == 'waiting'
+            && request.auth.uid == existing().hostUid
+            && incoming().status == 'finished'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'winReasonKey', 'updatedAt'])
+          )
+          ||
+          // Action: Participant updates live match state or finishes match
+          (
+            existing().status == 'active'
+            && (request.auth.uid == existing().hostUid || request.auth.uid == existing().guestUid)
+            && incoming().guestUid == existing().guestUid
+            && incoming().p2Uid == existing().p2Uid
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'p1Faction', 'activePlayer', 'p1TimeMs', 'p2TimeMs',
+              'stateVersion', 'turnsPlayed', 'boardFlat', 'drawPile', 'discardPile',
+              'capturedWhitePieces', 'capturedBlackPieces', 'exiledPieces',
+              'enPassantTarget', 'currentCard', 'cardFaceDown', 'phase',
+              'movesRemaining', 'skipOpponentTurns', 'wildTeleportPending',
+              'plus2Remaining', 'plus4Remaining', 'pendingWildPieceType',
+              'pendingPromotion', 'bannerKey', 'bannerParams',
+              'winnerUid', 'winReasonKey', 'eloDelta',
+              'lastChainColor', 'lastChainBy', 'isFirstMoveOfTurn', 'moveHistory', 'lastDuelText',
+              'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if false;
+    }
+  }
+}

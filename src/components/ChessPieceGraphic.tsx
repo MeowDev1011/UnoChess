@@ -1,5 +1,11 @@
 import React from 'react';
-import { ChessPiece, Faction, PieceType, PIECE_LABELS_ES } from '../types/game';
+import {
+  ChessPiece,
+  Faction,
+  PIECE_BASE_COLOR_MAP,
+  PIECE_LABELS_ES,
+  PieceType,
+} from '../types/game';
 
 interface ChessPieceGraphicProps {
   piece: ChessPiece;
@@ -118,15 +124,8 @@ export const ChessPieceGraphic: React.FC<ChessPieceGraphicProps> = ({
   isCheckedKing = false,
   size = 'board',
 }) => {
-  const baseAsset = isCheckedKing
-    ? '/assets/red-base.png'
-    : isSelected
-    ? '/assets/yellow-base.png'
-    : isTargetable
-    ? '/assets/green-base.png'
-    : piece.faction === 'white'
-    ? '/assets/blue-base.png'
-    : '/assets/red-base.png';
+  const fixedColor = PIECE_BASE_COLOR_MAP[piece.type];
+  const baseAsset = `/assets/${fixedColor}-base.png`;
 
   return (
     <div
@@ -135,16 +134,18 @@ export const ChessPieceGraphic: React.FC<ChessPieceGraphicProps> = ({
       }`}
       title={PIECE_LABELS_ES[piece.type]}
     >
-      {/* Circular Colored Pedestal Base */}
+      {/* Fixed Circular Colored Pedestal Base per Piece Type */}
       <div
         className={`absolute bottom-[6%] h-[36%] w-[78%] overflow-hidden rounded-full border-2 shadow-md transition-transform duration-150 ${
-          isSelected
-            ? 'scale-110 border-yellow-200 ring-2 ring-yellow-300'
-            : isCheckedKing
-            ? 'animate-pulse border-red-200 ring-2 ring-red-400'
+          isCheckedKing
+            ? 'animate-pulse border-red-200 ring-2 ring-red-500'
+            : isSelected
+            ? 'scale-110 border-amber-200 ring-2 ring-amber-300'
             : isTargetable
             ? 'border-emerald-200 ring-2 ring-emerald-400'
-            : 'border-slate-900/90'
+            : piece.faction === 'white'
+            ? 'border-amber-100/90'
+            : 'border-slate-950'
         }`}
       >
         <img
