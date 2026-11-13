@@ -144,6 +144,15 @@ export interface GameSnapshot {
   enPassantTarget: Coord | null;
 }
 
+export type TimeControlElos = Record<TimeControlCategory, number>;
+
+export interface LichessTimeControlElos {
+  bullet: number;
+  blitz: number;
+  rapid: number;
+  classical: number;
+}
+
 export interface PlayerProfile {
   uid: string;
   nickname: string;
@@ -153,6 +162,28 @@ export interface PlayerProfile {
   authType: 'device' | 'lichess';
   lichessUsername: string;
   lichessElo: number;
+  elos: TimeControlElos;
+  lichessElos: LichessTimeControlElos;
+}
+
+export function getTimeControlCategoryFromMinutes(minutes: number): TimeControlCategory {
+  if (minutes <= 0) return 'unlimited';
+  if (minutes <= 2) return 'bullet';
+  if (minutes <= 5) return 'blitz';
+  if (minutes <= 15) return 'rapid';
+  return 'classical';
+}
+
+export function getProfileEloForCategory(
+  profile: PlayerProfile | null | undefined,
+  category: TimeControlCategory
+): number {
+  if (!profile) return 1200;
+  const catElo = profile.elos?.[category];
+  if (typeof catElo === 'number' && catElo >= 100) {
+    return Math.round(catElo);
+  }
+  return Math.round(profile.elo || 1200);
 }
 
 export interface LobbyChallenge {

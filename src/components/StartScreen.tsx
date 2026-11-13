@@ -6,9 +6,11 @@ import {
   Faction,
   GameMode,
   LocalPlayStyle,
+  PlayerProfile,
   TIME_CONTROL_PRESETS,
   TimeControlCategory,
   TimeControlPreset,
+  getProfileEloForCategory,
 } from '../types/game';
 import { SUPPORTED_LANGUAGES } from '../i18n/languages';
 import { LayeredCard } from './LayeredCard';
@@ -19,6 +21,7 @@ interface StartScreenProps {
   playerColor: Faction;
   localPlayStyle: LocalPlayStyle;
   timeControl: TimeControlPreset;
+  profile?: PlayerProfile | null;
   onChangeMode: (mode: GameMode) => void;
   onChangeBotLevel: (level: BotLevel) => void;
   onChangePlayerColor: (color: Faction) => void;
@@ -35,6 +38,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({
   playerColor,
   localPlayStyle,
   timeControl,
+  profile,
   onChangeMode,
   onChangeBotLevel,
   onChangePlayerColor,
@@ -76,6 +80,10 @@ export const StartScreen: React.FC<StartScreenProps> = ({
     const first = TIME_CONTROL_PRESETS.find((p) => p.category === cat);
     if (first) onChangeTimeControl(first);
   };
+
+  const activeCategoryElo = profile
+    ? getProfileEloForCategory(profile, timeControl.category)
+    : null;
 
   return (
     <div className="relative flex min-h-[100dvh] w-full flex-col items-center justify-between px-4 py-3.5">
@@ -222,9 +230,16 @@ export const StartScreen: React.FC<StartScreenProps> = ({
         {mode === 'online' ? (
           <div className="space-y-3">
             <div className="rounded-2xl border-2 border-slate-700/80 bg-slate-950/60 p-3 text-xs text-slate-200">
-              <div className="flex items-center gap-2 font-extrabold text-amber-300">
-                <Trophy className="h-4 w-4 shrink-0" />
-                <span>{t('onlineLobbyTitle')} · Elo</span>
+              <div className="flex items-center justify-between gap-2 font-extrabold text-amber-300">
+                <span className="flex items-center gap-2">
+                  <Trophy className="h-4 w-4 shrink-0" />
+                  <span>{t('onlineLobbyTitle')} · Elo</span>
+                </span>
+                {activeCategoryElo !== null && (
+                  <span className="rounded-lg bg-amber-400/20 px-2 py-0.5 text-[11px] font-extrabold text-amber-200 tabular-nums">
+                    {activeCategoryElo} Elo
+                  </span>
+                )}
               </div>
               <p className="mt-1 leading-relaxed text-slate-300">
                 {t('onlineConnectDesc')}
@@ -291,10 +306,18 @@ export const StartScreen: React.FC<StartScreenProps> = ({
 
             {/* 3. Chess Time Controls (Unlimited + Bullet -> Classical) */}
             <div className="mb-3.5">
-              <span className="mb-1 flex items-center gap-1.5 text-xs font-extrabold tracking-wide text-amber-300">
-                <Clock className="h-3.5 w-3.5" />
-                {t('timeControlTitle')}
-              </span>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 text-xs font-extrabold tracking-wide text-amber-300">
+                  <Clock className="h-3.5 w-3.5" />
+                  {t('timeControlTitle')}
+                </span>
+                {activeCategoryElo !== null && (
+                  <span className="inline-flex items-center gap-1 rounded-md bg-amber-400/15 px-1.5 py-0.5 text-[10px] font-extrabold text-amber-200 tabular-nums">
+                    <Trophy className="h-3 w-3 text-amber-300" />
+                    <span>{t('onlineEloLabel', { elo: activeCategoryElo })}</span>
+                  </span>
+                )}
+              </div>
 
               {/* Category Line Tabs */}
               <div className="grid grid-cols-5 border-b-2 border-slate-700">

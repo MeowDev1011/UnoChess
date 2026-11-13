@@ -24,6 +24,7 @@ import {
   TIME_CONTROL_PRESETS,
   TimeControlCategory,
   TimeControlPreset,
+  getProfileEloForCategory,
 } from '../types/game';
 import {
   acceptLobbyChallenge,
@@ -33,10 +34,12 @@ import {
   createMagicLinkMatch,
   joinMagicLinkMatch,
   loginWithLichessProfile,
+  refreshLichessProfileIfLinked,
   saveDevicePlayerAccount,
   subscribeMatch,
   subscribeMyMatchedChallenges,
   subscribeOpenChallenges,
+  syncDeviceAccountWithFirestore,
 } from '../services/onlineService';
 import {
   createLichessOAuthUrl,
@@ -119,6 +122,37 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
       setNicknameInput(profile.nickname);
     }
   }, [editingNickname, profile]);
+
+  // Dynamically refresh Firestore & Lichess per-time-control ratings every time the lobby opens
+  const refreshedForUidRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!profile) {
+      refreshedForUidRef.current = null;
+      return;
+    }
+    if (refreshedForUidRef.current === profile.uid) return;
+    refreshedForUidRef.current = profile.uid;
+
+    let active = true;
+    void (async () => {
+      try {
+        const synced = await syncDeviceAccountWithFirestore(profile);
+        const latest =
+          synced.authType === 'lichess'
+            ? await refreshLichessProfileIfLinked(synced)
+            : synced;
+        if (active && mountedRef.current) {
+          onProfileSaved(latest);
+        }
+      } catch {
+        // Keep cached profile if temporarily offline
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [onProfileSaved, profile]);
 
   const completeLichessCallback = useCallback(
     async (code: string, state: string, error?: string) => {
@@ -454,6 +488,27 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
     { id: 'classical', label: t('timeClassical') },
   ];
 
+  const categoryLabelMap: Record<TimeControlCategory, string> = {
+    unlimited: t('timeUnlimited'),
+    bullet: t('timeBullet'),
+    blitz: t('timeBlitz'),
+    rapid: t('timeRapid'),
+    classical: t('timeClassical'),
+  };
+
+  const activeCategoryElo = getProfileEloForCategory(
+    profile,
+    selectedTimeControl.category
+  );
+  const activeCategoryLabel = categoryLabelMap[selectedTimeControl.category];
+
+  const handleSelectTimeCategory = (catId: TimeControlCategory) => {
+    sound.playClick();
+    if (selectedTimeControl.category === catId) return;
+    const first = TIME_CONTROL_PRESETS.find((p) => p.category === catId);
+    if (first) setSelectedTimeControl(first);
+  };
+
   const presetsInCategory = TIME_CONTROL_PRESETS.filter(
     (p) => p.category === selectedTimeControl.category
   );
@@ -472,11 +527,7 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
               <button
                 key={cat.id}
                 type="button"
-                onClick={() => {
-                  sound.playClick();
-                  const first = TIME_CONTROL_PRESETS.find((p) => p.category === cat.id);
-                  if (first) setSelectedTimeControl(first);
-                }}
+                onClick={() => handleSelectTimeCategory(cat.id)}
                 className={`relative flex min-h-[32px] items-center justify-center pb-1 text-[11px] font-extrabold transition-colors ${
                   active ? 'text-amber-300' : 'text-slate-400 hover:text-slate-200'
                 }`}
@@ -722,53 +773,87 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
         ) : (
           /* Live Lobby + Magic Link */
           <div className="flex flex-1 flex-col gap-3">
-            {/* Player Profile Strip (Device Mini-Account or Lichess + Elo + Record) */}
-            <div className="flex items-center justify-between gap-2 rounded-2xl border-3 border-slate-950 bg-slate-900/90 px-3.5 py-2.5 shadow-lg backdrop-blur-md">
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5">
-                  {profile.authType === 'lichess' && (
-                    <span
-                      title={t('onlineLichessBadge', { user: profile.lichessUsername })}
-                      className="inline-flex shrink-0 items-center justify-center rounded-md bg-white p-0.5 text-slate-950 shadow-sm"
-                    >
-                      <OfficialLichessLogo className="h-3.5 w-3.5" />
+            {/* Player Profile Strip (Device Mini-Account or Lichess + Active Time Control Elo + Record) */}
+            <div className="space-y-2 rounded-2xl border-3 border-slate-950 bg-slate-900/90 px-3.5 py-2.5 shadow-lg backdrop-blur-md">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    {profile.authType === 'lichess' && (
+                      <span
+                        title={t('onlineLichessBadge', { user: profile.lichessUsername })}
+                        className="inline-flex shrink-0 items-center justify-center rounded-md bg-white p-0.5 text-slate-950 shadow-sm"
+                      >
+                        <OfficialLichessLogo className="h-3.5 w-3.5" />
+                      </span>
+                    )}
+                    <span className="truncate text-sm font-extrabold text-white">
+                      {profile.nickname}
                     </span>
-                  )}
-                  <span className="truncate text-sm font-extrabold text-white">
-                    {profile.nickname}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      sound.playClick();
-                      setNicknameInput(profile.nickname);
-                      setEditingNickname(true);
-                    }}
-                    aria-label={t('onlineNicknameTitle')}
-                    className="rounded-lg p-1 text-slate-400 transition hover:bg-slate-800 hover:text-amber-300"
-                  >
-                    <Edit3 className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-                <div className="flex items-center gap-2 text-[11px] font-bold text-slate-400 tabular-nums">
-                  <span>{t('onlineRecordLabel', { wins: profile.wins, losses: profile.losses })}</span>
-                  {profile.authType !== 'lichess' && (
                     <button
                       type="button"
-                      disabled={lichessBusy}
-                      onClick={handleLichessLogin}
-                      className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] font-extrabold text-white transition hover:border-white"
+                      onClick={() => {
+                        sound.playClick();
+                        setNicknameInput(profile.nickname);
+                        setEditingNickname(true);
+                      }}
+                      aria-label={t('onlineNicknameTitle')}
+                      className="rounded-lg p-1 text-slate-400 transition hover:bg-slate-800 hover:text-amber-300"
                     >
-                      <OfficialLichessLogo className="h-3 w-3" />
-                      <span>{t('onlineLichessLinkBtn')}</span>
+                      <Edit3 className="h-3.5 w-3.5" />
                     </button>
-                  )}
+                  </div>
+                  <div className="flex items-center gap-2 text-[11px] font-bold text-slate-400 tabular-nums">
+                    <span>{t('onlineRecordLabel', { wins: profile.wins, losses: profile.losses })}</span>
+                    {profile.authType !== 'lichess' && (
+                      <button
+                        type="button"
+                        disabled={lichessBusy}
+                        onClick={handleLichessLogin}
+                        className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-800 px-1.5 py-0.5 text-[10px] font-extrabold text-white transition hover:border-white"
+                      >
+                        <OfficialLichessLogo className="h-3 w-3" />
+                        <span>{t('onlineLichessLinkBtn')}</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex shrink-0 flex-col items-end">
+                  <div className="flex items-center gap-1.5 rounded-xl border-2 border-slate-950 bg-amber-400 px-3 py-1 text-xs font-extrabold text-slate-950 shadow tabular-nums">
+                    <Trophy className="h-3.5 w-3.5" />
+                    <span>{t('onlineEloLabel', { elo: activeCategoryElo })}</span>
+                  </div>
+                  <span className="mt-0.5 text-[10px] font-extrabold uppercase tracking-wide text-amber-300">
+                    {activeCategoryLabel}
+                  </span>
                 </div>
               </div>
 
-              <div className="flex shrink-0 items-center gap-1.5 rounded-xl border-2 border-slate-950 bg-amber-400 px-3 py-1 text-xs font-extrabold text-slate-950 shadow tabular-nums">
-                <Trophy className="h-3.5 w-3.5" />
-                <span>{t('onlineEloLabel', { elo: profile.elo })}</span>
+              {/* Interactive All-Time-Control Elo Breakdown */}
+              <div className="grid grid-cols-5 gap-1 border-t border-slate-800 pt-2">
+                {categories.map((cat) => {
+                  const catElo = getProfileEloForCategory(profile, cat.id);
+                  const isActiveCat = selectedTimeControl.category === cat.id;
+                  return (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => handleSelectTimeCategory(cat.id)}
+                      className={`flex flex-col items-center rounded-xl border px-1 py-1 text-center transition ${
+                        isActiveCat
+                          ? 'border-amber-400 bg-amber-400/20 text-amber-200 shadow-sm'
+                          : 'border-slate-800 bg-slate-950/60 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                      }`}
+                    >
+                      <span className="w-full truncate text-[9px] font-bold uppercase tracking-tight">
+                        {cat.id === 'unlimited' ? '∞' : cat.label}
+                      </span>
+                      <span className="text-[11px] font-extrabold tabular-nums text-white">
+                        {catElo}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -825,7 +910,7 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
                         {t('onlineWaitingRival')}
                       </p>
                       <div className="mt-1 text-[11px] font-bold text-slate-300 tabular-nums">
-                        {myOpenChallenge.timeControlLabel} · {profile.elo} Elo
+                        {myOpenChallenge.timeControlLabel} · {myOpenChallenge.creatorElo} Elo
                       </div>
                       <button
                         type="button"

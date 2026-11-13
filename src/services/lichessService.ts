@@ -1,7 +1,11 @@
+import { LichessTimeControlElos, TimeControlElos } from '../types/game';
+
 export interface LichessProfileResult {
   lichessId: string;
   username: string;
   elo: number;
+  lichessElos: LichessTimeControlElos;
+  elos: TimeControlElos;
 }
 
 interface LichessPkceState {
@@ -25,9 +29,14 @@ interface LichessAccountResponse {
 }
 
 const LICHESS_PKCE_KEY = 'unochess_lichess_pkce_v1';
+const LICHESS_TOKEN_KEY = 'unochess_lichess_token_v1';
 export const LICHESS_CB_STORAGE_KEY = 'unochess_lichess_cb';
 const LICHESS_CLIENT_ID = 'unochess.pages.dev';
 const LICHESS_SCOPES = 'preference:read';
+
+function clampElo(val: number): number {
+  return Math.max(100, Math.min(4000, Math.round(val)));
+}
 
 function base64UrlEncode(buffer: ArrayBuffer | Uint8Array): string {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
@@ -102,7 +111,7 @@ export function extractBestLichessElo(perfs?: Record<string, LichessPerfStats>):
     const stat = perfs[key];
     if (stat && typeof stat.rating === 'number' && stat.rating > 0) {
       candidates.push({
-        rating: Math.round(stat.rating),
+        rating: clampElo(stat.rating),
         games: Number(stat.games ?? 0),
         prov: Boolean(stat.prov) || (typeof stat.rd === 'number' && stat.rd > 180),
         priority: idx,
@@ -112,7 +121,6 @@ export function extractBestLichessElo(perfs?: Record<string, LichessPerfStats>):
 
   if (candidates.length === 0) return 1200;
 
-  // Prefer established (non-provisional) ratings with games, then highest games/priority
   candidates.sort((a, b) => {
     if (a.prov !== b.prov) return a.prov ? 1 : -1;
     if ((a.games > 0) !== (b.games > 0)) return a.games > 0 ? -1 : 1;
@@ -120,7 +128,58 @@ export function extractBestLichessElo(perfs?: Record<string, LichessPerfStats>):
     return a.priority - b.priority;
   });
 
-  return Math.max(100, Math.min(4000, candidates[0].rating));
+  return candidates[0].rating;
+}
+
+export function extractAllLichessElos(perfs?: Record<string, LichessPerfStats>): {
+  bestElo: number;
+  lichessElos: LichessTimeControlElos;
+  elos: TimeControlElos;
+} {
+  const bestElo = extractBestLichessElo(perfs);
+
+  const readPerf = (key: 'bullet' | 'blitz' | 'rapid' | 'classical'): number => {
+    const stat = perfs?.[key];
+    if (stat && typeof stat.rating === 'number' && stat.rating > 0) {
+      return clampElo(stat.rating);
+    }
+    return 0;
+  };
+
+  const rawBullet = readPerf('bullet');
+  const rawBlitz = readPerf('blitz');
+  const rawRapid = readPerf('rapid');
+  const rawClassical = readPerf('classical');
+
+  const lichessElos: LichessTimeControlElos = {
+    bullet: rawBullet,
+    blitz: rawBlitz,
+    rapid: rawRapid,
+    classical: rawClassical,
+  };
+
+  const elos: TimeControlElos = {
+    unlimited: bestElo,
+    bullet: rawBullet > 0 ? rawBullet : bestElo,
+    blitz: rawBlitz > 0 ? rawBlitz : bestElo,
+    rapid: rawRapid > 0 ? rawRapid : bestElo,
+    classical: rawClassical > 0 ? rawClassical : bestElo,
+  };
+
+  return { bestElo, lichessElos, elos };
+}
+
+function mapLichessAccountToResult(account: LichessAccountResponse): LichessProfileResult {
+  const rawName = (account.username || account.id || 'LichessPlayer').trim();
+  const username = rawName.slice(0, 20);
+  const { bestElo, lichessElos, elos } = extractAllLichessElos(account.perfs);
+  return {
+    lichessId: account.id,
+    username: username.length >= 2 ? username : `Li_${account.id}`.slice(0, 20),
+    elo: bestElo,
+    lichessElos,
+    elos,
+  };
 }
 
 export async function exchangeLichessCodeForProfile(
@@ -162,6 +221,12 @@ export async function exchangeLichessCodeForProfile(
     throw new Error('Missing access_token from Lichess');
   }
 
+  try {
+    localStorage.setItem(LICHESS_TOKEN_KEY, tokenJson.access_token);
+  } catch {
+    // ignore storage errors
+  }
+
   const accRes = await fetch('https://lichess.org/api/account', {
     headers: {
       Authorization: `Bearer ${tokenJson.access_token}`,
@@ -173,13 +238,43 @@ export async function exchangeLichessCodeForProfile(
   }
 
   const account = (await accRes.json()) as LichessAccountResponse;
-  const rawName = (account.username || account.id || 'LichessPlayer').trim();
-  const username = rawName.slice(0, 20);
-  const elo = extractBestLichessElo(account.perfs);
+  return mapLichessAccountToResult(account);
+}
 
-  return {
-    lichessId: account.id,
-    username: username.length >= 2 ? username : `Li_${account.id}`.slice(0, 20),
-    elo,
-  };
+export async function fetchLatestLichessProfile(
+  lichessUsernameOrId: string
+): Promise<LichessProfileResult | null> {
+  const cleanUser = lichessUsernameOrId.trim();
+  if (!cleanUser) return null;
+
+  try {
+    const token = localStorage.getItem(LICHESS_TOKEN_KEY);
+    if (token) {
+      const accRes = await fetch('https://lichess.org/api/account', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (accRes.ok) {
+        const account = (await accRes.json()) as LichessAccountResponse;
+        return mapLichessAccountToResult(account);
+      }
+      if (accRes.status === 401) {
+        localStorage.removeItem(LICHESS_TOKEN_KEY);
+      }
+    }
+
+    const pubRes = await fetch(`https://lichess.org/api/user/${encodeURIComponent(cleanUser)}`);
+    if (!pubRes.ok) return null;
+    const account = (await pubRes.json()) as LichessAccountResponse;
+    return mapLichessAccountToResult(account);
+  } catch {
+    return null;
+  }
+}
+
+export function clearStoredLichessToken(): void {
+  try {
+    localStorage.removeItem(LICHESS_TOKEN_KEY);
+  } catch {
+    // ignore
+  }
 }

@@ -36,6 +36,14 @@
         "lichessElo": {
           "type": "number"
         },
+        "elos": {
+          "type": "object",
+          "description": "Elo ratings keyed by time control category (unlimited, bullet, blitz, rapid, classical)."
+        },
+        "lichessElos": {
+          "type": "object",
+          "description": "Synced Lichess Elo ratings keyed by bullet, blitz, rapid, classical."
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"

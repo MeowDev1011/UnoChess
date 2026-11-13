@@ -23,6 +23,7 @@ import {
   TIME_CONTROL_PRESETS,
   TimeControlPreset,
   WILD_COLOR_PIECE_MAP,
+  getTimeControlCategoryFromMinutes,
 } from './types/game';
 import {
   applyMoveToBoard,
@@ -209,7 +210,7 @@ export default function App() {
     })();
   }, []);
 
-  // Sync device mini-account with cloud & listen for live Elo/stats updates
+  // Sync device mini-account & Lichess per-time-control Elos on load and every time user enters lobby/menu
   const myProfileUid = myProfile?.uid ?? '';
   useEffect(() => {
     if (!myProfileUid) return;
@@ -233,7 +234,7 @@ export default function App() {
       active = false;
       unsub();
     };
-  }, [myProfileUid]);
+  }, [myProfileUid, showOnlineLobby]);
 
   // Derived factions & labels
   const p2Faction = oppositeFaction(p1Faction);
@@ -486,7 +487,8 @@ export default function App() {
             !appliedEloMatchesRef.current.has(match.id)
           ) {
             appliedEloMatchesRef.current.add(match.id);
-            void applyMatchEloToMyProfile(prof, didWin, match.eloDelta);
+            const matchCategory = getTimeControlCategoryFromMinutes(match.minutes);
+            void applyMatchEloToMyProfile(prof, didWin, match.eloDelta, matchCategory);
           }
         }
       } else {
@@ -2902,6 +2904,7 @@ export default function App() {
             playerColor={playerColor}
             localPlayStyle={localPlayStyle}
             timeControl={timeControl}
+            profile={myProfile}
             onChangeMode={(m) => {
               sound.playClick();
               setMode(m);

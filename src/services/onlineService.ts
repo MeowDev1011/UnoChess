@@ -20,15 +20,24 @@ import {
   CardColor,
   ChessPiece,
   Faction,
+  LichessTimeControlElos,
   LobbyChallenge,
   MoveHistoryEntry,
   OnlineMatchDoc,
   PlayerId,
   PlayerProfile,
   PreferredColor,
+  TimeControlCategory,
+  TimeControlElos,
   TimeControlPreset,
+  getProfileEloForCategory,
+  getTimeControlCategoryFromMinutes,
 } from '../types/game';
-import { LichessProfileResult } from './lichessService';
+import {
+  LichessProfileResult,
+  clearStoredLichessToken,
+  fetchLatestLichessProfile,
+} from './lichessService';
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -66,21 +75,69 @@ interface FirestoreErrorInfo {
   };
 }
 
+function clampElo(val: number): number {
+  return Math.max(100, Math.min(4000, Math.round(val)));
+}
+
+function clampLichessRaw(val: number): number {
+  return Math.max(0, Math.min(4000, Math.round(val)));
+}
+
+function buildDefaultElos(baseElo = 1200): TimeControlElos {
+  const b = clampElo(baseElo);
+  return {
+    unlimited: b,
+    bullet: b,
+    blitz: b,
+    rapid: b,
+    classical: b,
+  };
+}
+
+function normalizeElos(raw: unknown, fallback = 1200): TimeControlElos {
+  const fb = clampElo(fallback);
+  if (!raw || typeof raw !== 'object') return buildDefaultElos(fb);
+  const r = raw as Record<string, unknown>;
+  return {
+    unlimited: typeof r.unlimited === 'number' ? clampElo(r.unlimited) : fb,
+    bullet: typeof r.bullet === 'number' ? clampElo(r.bullet) : fb,
+    blitz: typeof r.blitz === 'number' ? clampElo(r.blitz) : fb,
+    rapid: typeof r.rapid === 'number' ? clampElo(r.rapid) : fb,
+    classical: typeof r.classical === 'number' ? clampElo(r.classical) : fb,
+  };
+}
+
+function normalizeLichessElos(raw: unknown): LichessTimeControlElos {
+  if (!raw || typeof raw !== 'object') {
+    return { bullet: 0, blitz: 0, rapid: 0, classical: 0 };
+  }
+  const r = raw as Record<string, unknown>;
+  return {
+    bullet: typeof r.bullet === 'number' ? clampLichessRaw(r.bullet) : 0,
+    blitz: typeof r.blitz === 'number' ? clampLichessRaw(r.blitz) : 0,
+    rapid: typeof r.rapid === 'number' ? clampLichessRaw(r.rapid) : 0,
+    classical: typeof r.classical === 'number' ? clampLichessRaw(r.classical) : 0,
+  };
+}
+
 export function loadDeviceAccount(): PlayerProfile | null {
   try {
     const raw = localStorage.getItem(DEVICE_ACCOUNT_KEY);
     if (!raw) return null;
     const d = JSON.parse(raw) as Partial<PlayerProfile>;
     if (!d.uid || !d.nickname) return null;
+    const baseElo = Number(d.elo ?? 1200);
     return {
       uid: String(d.uid),
       nickname: String(d.nickname).slice(0, 20),
-      elo: Number(d.elo ?? 1200),
+      elo: clampElo(baseElo),
       wins: Number(d.wins ?? 0),
       losses: Number(d.losses ?? 0),
       authType: d.authType === 'lichess' ? 'lichess' : 'device',
       lichessUsername: String(d.lichessUsername ?? ''),
       lichessElo: Number(d.lichessElo ?? 0),
+      elos: normalizeElos(d.elos, baseElo),
+      lichessElos: normalizeLichessElos(d.lichessElos),
     };
   } catch {
     return null;
@@ -101,6 +158,7 @@ export function clearDeviceAccountLocally(): void {
   } catch {
     // ignore storage failures
   }
+  clearStoredLichessToken();
 }
 
 export function handleFirestoreError(
@@ -162,16 +220,121 @@ export function calculateEloDelta(winnerElo: number, loserElo: number): number {
 }
 
 function mapDocToProfile(d: Record<string, unknown>): PlayerProfile {
+  const baseElo = Number(d.elo ?? 1200);
   return {
     uid: String(d.uid),
     nickname: String(d.nickname).slice(0, 20),
-    elo: Number(d.elo ?? 1200),
+    elo: clampElo(baseElo),
     wins: Number(d.wins ?? 0),
     losses: Number(d.losses ?? 0),
     authType: d.authType === 'lichess' ? 'lichess' : 'device',
     lichessUsername: String(d.lichessUsername ?? ''),
     lichessElo: Number(d.lichessElo ?? 0),
+    elos: normalizeElos(d.elos, baseElo),
+    lichessElos: normalizeLichessElos(d.lichessElos),
   };
+}
+
+function mergeFreshLichessElos(
+  current: PlayerProfile,
+  fresh: LichessProfileResult
+): {
+  elos: TimeControlElos;
+  lichessElos: LichessTimeControlElos;
+  elo: number;
+  lichessElo: number;
+  nickname: string;
+  changed: boolean;
+} {
+  const noUnoGamesYet = current.wins + current.losses === 0;
+  const cats: ('bullet' | 'blitz' | 'rapid' | 'classical')[] = [
+    'bullet',
+    'blitz',
+    'rapid',
+    'classical',
+  ];
+
+  const nextElos: TimeControlElos = { ...current.elos };
+  if (noUnoGamesYet) {
+    nextElos.unlimited = fresh.elos.unlimited;
+  }
+
+  for (const cat of cats) {
+    const prevRaw = current.lichessElos?.[cat] ?? 0;
+    const freshRaw = fresh.lichessElos[cat] ?? 0;
+    if (noUnoGamesYet || prevRaw === 0) {
+      nextElos[cat] = fresh.elos[cat];
+    } else if (freshRaw > 0) {
+      const diff = freshRaw - prevRaw;
+      nextElos[cat] = clampElo((current.elos?.[cat] ?? fresh.elos[cat]) + diff);
+    }
+  }
+
+  const nextPrimaryElo = nextElos.blitz || fresh.elo;
+  const nextNickname = fresh.username.slice(0, 20) || current.nickname;
+
+  const changed =
+    nextNickname !== current.nickname ||
+    nextPrimaryElo !== current.elo ||
+    fresh.elo !== current.lichessElo ||
+    cats.some(
+      (c) =>
+        nextElos[c] !== current.elos?.[c] ||
+        fresh.lichessElos[c] !== current.lichessElos?.[c]
+    ) ||
+    nextElos.unlimited !== current.elos?.unlimited;
+
+  return {
+    elos: nextElos,
+    lichessElos: fresh.lichessElos,
+    elo: nextPrimaryElo,
+    lichessElo: fresh.elo,
+    nickname: nextNickname,
+    changed,
+  };
+}
+
+export async function refreshLichessProfileIfLinked(
+  profile: PlayerProfile
+): Promise<PlayerProfile> {
+  if (profile.authType !== 'lichess') return profile;
+  const queryName =
+    profile.lichessUsername || profile.uid.replace(/^lichess_/, '');
+  if (!queryName) return profile;
+
+  const fresh = await fetchLatestLichessProfile(queryName);
+  if (!fresh) return profile;
+
+  const merged = mergeFreshLichessElos(profile, fresh);
+  if (!merged.changed) return profile;
+
+  const updated: PlayerProfile = {
+    ...profile,
+    nickname: merged.nickname,
+    elo: merged.elo,
+    elos: merged.elos,
+    lichessUsername: fresh.username.slice(0, 40),
+    lichessElo: merged.lichessElo,
+    lichessElos: merged.lichessElos,
+  };
+
+  try {
+    await updateDoc(doc(db, 'players', profile.uid), {
+      nickname: updated.nickname,
+      elo: updated.elo,
+      elos: updated.elos,
+      authType: 'lichess',
+      lichessUsername: updated.lichessUsername,
+      lichessElo: updated.lichessElo,
+      lichessElos: updated.lichessElos,
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // keep local updated ratings if offline
+  }
+
+  saveDeviceAccountLocally(updated);
+  return updated;
 }
 
 export async function syncDeviceAccountWithFirestore(
@@ -181,25 +344,38 @@ export async function syncDeviceAccountWithFirestore(
   const ref = doc(db, 'players', localProfile.uid);
   try {
     const snap = await getDoc(ref);
+    let synced: PlayerProfile;
     if (snap.exists()) {
-      const remote = mapDocToProfile(snap.data() as Record<string, unknown>);
-      saveDeviceAccountLocally(remote);
-      return remote;
+      synced = mapDocToProfile(snap.data() as Record<string, unknown>);
+      saveDeviceAccountLocally(synced);
+    } else {
+      await setDoc(ref, {
+        uid: localProfile.uid,
+        nickname: localProfile.nickname.slice(0, 20),
+        elo: clampElo(localProfile.elo),
+        wins: 0,
+        losses: 0,
+        authType: localProfile.authType,
+        lichessUsername: localProfile.lichessUsername.slice(0, 40),
+        lichessElo: clampLichessRaw(localProfile.lichessElo),
+        elos: localProfile.elos ?? buildDefaultElos(localProfile.elo),
+        lichessElos: localProfile.lichessElos ?? {
+          bullet: 0,
+          blitz: 0,
+          rapid: 0,
+          classical: 0,
+        },
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      synced = localProfile;
+      saveDeviceAccountLocally(synced);
     }
-    await setDoc(ref, {
-      uid: localProfile.uid,
-      nickname: localProfile.nickname.slice(0, 20),
-      elo: Math.max(100, Math.min(4000, Math.round(localProfile.elo))),
-      wins: 0,
-      losses: 0,
-      authType: localProfile.authType,
-      lichessUsername: localProfile.lichessUsername.slice(0, 40),
-      lichessElo: Math.max(0, Math.min(4000, Math.round(localProfile.lichessElo))),
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-    saveDeviceAccountLocally(localProfile);
-    return localProfile;
+
+    if (synced.authType === 'lichess') {
+      synced = await refreshLichessProfileIfLinked(synced);
+    }
+    return synced;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -249,6 +425,8 @@ export async function saveDevicePlayerAccount(
         authType: 'device',
         lichessUsername: '',
         lichessElo: 0,
+        elos: buildDefaultElos(1200),
+        lichessElos: { bullet: 0, blitz: 0, rapid: 0, classical: 0 },
       };
       await setDoc(ref, {
         ...created,
@@ -282,7 +460,7 @@ export async function loginWithLichessProfile(
   const path = `players/${uid}`;
   const ref = doc(db, 'players', uid);
   const nickname = lichess.username.trim().slice(0, 20);
-  const clampedElo = Math.max(100, Math.min(4000, Math.round(lichess.elo || 1200)));
+  const clampedElo = clampElo(lichess.elo || 1200);
 
   try {
     const existing = await getDoc(ref);
@@ -296,6 +474,8 @@ export async function loginWithLichessProfile(
         authType: 'lichess',
         lichessUsername: lichess.username.slice(0, 40),
         lichessElo: clampedElo,
+        elos: lichess.elos,
+        lichessElos: lichess.lichessElos,
       };
       await setDoc(ref, {
         ...profile,
@@ -306,24 +486,26 @@ export async function loginWithLichessProfile(
       return profile;
     } else {
       const current = mapDocToProfile(existing.data() as Record<string, unknown>);
-      const nextNickname = nickname.length >= 2 ? nickname : current.nickname;
-      // Preserve UnoChess earned Elo if player already has rated UnoChess games; otherwise sync Lichess Elo
-      const nextElo = current.wins + current.losses === 0 ? clampedElo : current.elo;
+      const merged = mergeFreshLichessElos(current, lichess);
       await updateDoc(ref, {
-        nickname: nextNickname,
-        elo: nextElo,
+        nickname: merged.nickname,
+        elo: merged.elo,
+        elos: merged.elos,
         authType: 'lichess',
         lichessUsername: lichess.username.slice(0, 40),
-        lichessElo: clampedElo,
+        lichessElo: merged.lichessElo,
+        lichessElos: merged.lichessElos,
         updatedAt: serverTimestamp(),
       });
       const updated: PlayerProfile = {
         ...current,
-        nickname: nextNickname,
-        elo: nextElo,
+        nickname: merged.nickname,
+        elo: merged.elo,
+        elos: merged.elos,
         authType: 'lichess',
         lichessUsername: lichess.username.slice(0, 40),
-        lichessElo: clampedElo,
+        lichessElo: merged.lichessElo,
+        lichessElos: merged.lichessElos,
       };
       saveDeviceAccountLocally(updated);
       return updated;
@@ -336,15 +518,23 @@ export async function loginWithLichessProfile(
 export async function applyMatchEloToMyProfile(
   profile: PlayerProfile,
   won: boolean,
-  eloDelta: number
+  eloDelta: number,
+  category: TimeControlCategory = 'blitz'
 ): Promise<void> {
   const path = `players/${profile.uid}`;
-  const newElo = Math.max(100, Math.min(4000, Math.round(profile.elo + (won ? eloDelta : -eloDelta))));
+  const currentCatElo = getProfileEloForCategory(profile, category);
+  const updatedCatElo = clampElo(currentCatElo + (won ? eloDelta : -eloDelta));
+  const nextElos: TimeControlElos = {
+    ...(profile.elos ?? buildDefaultElos(profile.elo)),
+    [category]: updatedCatElo,
+  };
+  const newElo = clampElo(profile.elo + (won ? eloDelta : -eloDelta));
   const newWins = profile.wins + (won ? 1 : 0);
   const newLosses = profile.losses + (won ? 0 : 1);
   try {
     await updateDoc(doc(db, 'players', profile.uid), {
       elo: newElo,
+      elos: nextElos,
       wins: newWins,
       losses: newLosses,
       updatedAt: serverTimestamp(),
@@ -352,6 +542,7 @@ export async function applyMatchEloToMyProfile(
     saveDeviceAccountLocally({
       ...profile,
       elo: newElo,
+      elos: nextElos,
       wins: newWins,
       losses: newLosses,
     });
@@ -440,12 +631,13 @@ export async function createLobbyChallenge(
 ): Promise<string> {
   const id = generateSafeId('chl');
   const path = `challenges/${id}`;
+  const categoryElo = getProfileEloForCategory(profile, timeControl.category);
   try {
     await setDoc(doc(db, 'challenges', id), {
       id,
       creatorUid: profile.uid,
       creatorNickname: profile.nickname,
-      creatorElo: Math.round(profile.elo),
+      creatorElo: Math.round(categoryElo),
       timeControlId: timeControl.id,
       timeControlLabel: timeControl.label,
       minutes: Math.round(timeControl.minutes),
@@ -564,6 +756,8 @@ export async function acceptLobbyChallenge(
   const matchRef = doc(db, 'matches', matchId);
   const challengeRef = doc(db, 'challenges', challenge.id);
   const p1Faction = resolveP1Faction(challenge.preferredColor);
+  const category = getTimeControlCategoryFromMinutes(challenge.minutes);
+  const accepterElo = getProfileEloForCategory(accepter, category);
 
   const matchPayload = buildInitialMatchPayload({
     matchId,
@@ -574,7 +768,7 @@ export async function acceptLobbyChallenge(
     hostElo: challenge.creatorElo,
     guestUid: accepter.uid,
     guestNickname: accepter.nickname,
-    guestElo: accepter.elo,
+    guestElo: accepterElo,
     timeControlId: challenge.timeControlId,
     timeControlLabel: challenge.timeControlLabel,
     minutes: challenge.minutes,
@@ -606,6 +800,7 @@ export async function createMagicLinkMatch(
   const matchId = generateSafeId('mlk');
   const path = `matches/${matchId}`;
   const p1Faction = resolveP1Faction(preferredColor);
+  const hostCatElo = getProfileEloForCategory(host, timeControl.category);
 
   const payload = buildInitialMatchPayload({
     matchId,
@@ -613,7 +808,7 @@ export async function createMagicLinkMatch(
     status: 'waiting',
     hostUid: host.uid,
     hostNickname: host.nickname,
-    hostElo: host.elo,
+    hostElo: hostCatElo,
     guestUid: '',
     guestNickname: '',
     guestElo: 0,
@@ -650,11 +845,14 @@ export async function joinMagicLinkMatch(
       return 'unavailable';
     }
 
+    const matchCategory = getTimeControlCategoryFromMinutes(Number(d.minutes ?? 0));
+    const guestCatElo = getProfileEloForCategory(guest, matchCategory);
+
     await updateDoc(ref, {
       status: 'active',
       guestUid: guest.uid,
       guestNickname: guest.nickname,
-      guestElo: Math.round(guest.elo),
+      guestElo: Math.round(guestCatElo),
       p2Uid: guest.uid,
       joinedAt: serverTimestamp(),
       updatedAt: serverTimestamp(),

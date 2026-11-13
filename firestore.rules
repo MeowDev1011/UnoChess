@@ -25,6 +25,27 @@ service cloud.firestore {
     }
 
     // ---------- Validation Blueprints ----------
+    function isValidEloMap(m) {
+      return m is map
+        && m.keys().hasAll(['unlimited', 'bullet', 'blitz', 'rapid', 'classical'])
+        && m.keys().hasOnly(['unlimited', 'bullet', 'blitz', 'rapid', 'classical'])
+        && m.unlimited is number && m.unlimited >= 100 && m.unlimited <= 4000
+        && m.bullet is number && m.bullet >= 100 && m.bullet <= 4000
+        && m.blitz is number && m.blitz >= 100 && m.blitz <= 4000
+        && m.rapid is number && m.rapid >= 100 && m.rapid <= 4000
+        && m.classical is number && m.classical >= 100 && m.classical <= 4000;
+    }
+
+    function isValidLichessEloMap(m) {
+      return m is map
+        && m.keys().hasAll(['bullet', 'blitz', 'rapid', 'classical'])
+        && m.keys().hasOnly(['bullet', 'blitz', 'rapid', 'classical'])
+        && m.bullet is number && m.bullet >= 0 && m.bullet <= 4000
+        && m.blitz is number && m.blitz >= 0 && m.blitz <= 4000
+        && m.rapid is number && m.rapid >= 0 && m.rapid <= 4000
+        && m.classical is number && m.classical >= 0 && m.classical <= 4000;
+    }
+
     function isValidPlayer(data) {
       return data.keys().hasAll([
           'uid', 'nickname', 'elo', 'wins', 'losses',
@@ -34,6 +55,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'uid', 'nickname', 'elo', 'wins', 'losses',
           'authType', 'lichessUsername', 'lichessElo',
+          'elos', 'lichessElos',
           'createdAt', 'updatedAt'
         ])
         && isValidId(data.uid)
@@ -44,6 +66,8 @@ service cloud.firestore {
         && data.authType in ['device', 'lichess']
         && data.lichessUsername is string && data.lichessUsername.size() <= 40
         && data.lichessElo is number && data.lichessElo >= 0 && data.lichessElo <= 4000
+        && (!('elos' in data) || isValidEloMap(data.elos))
+        && (!('lichessElos' in data) || isValidLichessEloMap(data.lichessElos))
         && isValidTimestamp(data.createdAt)
         && isValidTimestamp(data.updatedAt);
     }
@@ -180,9 +204,9 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && (
           incoming().diff(existing()).affectedKeys().hasOnly(['nickname', 'updatedAt'])
-          || incoming().diff(existing()).affectedKeys().hasOnly(['elo', 'wins', 'losses', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['elo', 'elos', 'wins', 'losses', 'updatedAt'])
           || incoming().diff(existing()).affectedKeys().hasOnly([
-            'nickname', 'elo', 'authType', 'lichessUsername', 'lichessElo', 'updatedAt'
+            'nickname', 'elo', 'elos', 'authType', 'lichessUsername', 'lichessElo', 'lichessElos', 'updatedAt'
           ])
         );
 
