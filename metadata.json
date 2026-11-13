@@ -1,0 +1,6 @@
+{
+  "name": "UnoChess",
+  "description": "Juego de estrategia que fusiona las reglas clásicas del ajedrez con el dinamismo de las cartas de cuatro colores.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

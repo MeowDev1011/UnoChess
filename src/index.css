@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    background-image: url('/assets/background.png');
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+    background-color: #3f0909;
+    color: #ffffff;
+    overflow-x: hidden;
+  }
+}
+
+.font-display {
+  font-family: 'Fredoka', system-ui, sans-serif;
+}
+
+.text-outline {
+  text-shadow:
+    -2px -2px 0 #111827,
+     2px -2px 0 #111827,
+    -2px  2px 0 #111827,
+     2px  2px 0 #111827,
+     0px  4px 0 rgba(0, 0, 0, 0.55);
+}
+
+.text-outline-sm {
+  text-shadow:
+    -1.5px -1.5px 0 #111827,
+     1.5px -1.5px 0 #111827,
+    -1.5px  1.5px 0 #111827,
+     1.5px  1.5px 0 #111827,
+     0px    2px   0 rgba(0, 0, 0, 0.45);
+}
+
+.perspective-1000 {
+  perspective: 1000px;
+}
+
+.preserve-3d {
+  transform-style: preserve-3d;
+}
+
+.backface-hidden {
+  backface-visibility: hidden;
+}
+
+@keyframes floatSlow {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes rotateDevice {
+  0%, 20% {
+    transform: rotate(90deg);
+  }
+  55%, 80% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(90deg);
+  }
+}
+
+.animate-float-slow {
+  animation: floatSlow 2.2s ease-in-out infinite;
+}
+
+.animate-rotate-device {
+  animation: rotateDevice 2.4s ease-in-out infinite;
+}
