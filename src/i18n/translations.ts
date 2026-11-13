@@ -208,6 +208,10 @@ export interface TranslationDict {
   onlineSignOutBtn: string;
   onlineMatchCancelled: string;
   onlineLobbyError: string;
+  onlineMagicSelfLink: string;
+  onlineMagicRestored: string;
+  onlineChallengeTaken: string;
+  onlineConnectionLost: string;
   moveHistoryTitle: string;
   noMovesYet: string;
   downloadPgn: string;
@@ -467,6 +471,10 @@ const es: TranslationDict = {
   onlineSignOutBtn: 'Cambiar cuenta',
   onlineMatchCancelled: 'Sala cancelada por el anfitrión.',
   onlineLobbyError: 'No se pudo completar la acción. El desafío ya no está disponible o hubo un error de red.',
+  onlineMagicSelfLink: 'Este enlace pertenece a tu propia cuenta. Compártelo con tu amigo en otro dispositivo o navegador (o cambia de cuenta si quieres probar en este mismo navegador).',
+  onlineMagicRestored: 'Enlace mágico activo recuperado · Esperando a tu amigo...',
+  onlineChallengeTaken: 'Este desafío ya fue aceptado o cancelado. Elige otro de la lista.',
+  onlineConnectionLost: 'Sincronizando conexión en tiempo real...',
   moveHistoryTitle: 'Historial',
   noMovesYet: 'Sin movimientos aún · Roba una carta para comenzar',
   downloadPgn: 'Descargar PGN',
@@ -726,6 +734,10 @@ const en: TranslationDict = {
   onlineSignOutBtn: 'Switch account',
   onlineMatchCancelled: 'Room cancelled by host.',
   onlineLobbyError: 'Action could not be completed. The challenge may no longer be available.',
+  onlineMagicSelfLink: 'This link belongs to your own account. Share it with your friend on another device or browser (or switch account to test with a second player).',
+  onlineMagicRestored: 'Active magic link restored · Waiting for your friend...',
+  onlineChallengeTaken: 'This challenge was already accepted or cancelled. Pick another from the list.',
+  onlineConnectionLost: 'Syncing live match connection...',
   moveHistoryTitle: 'History',
   noMovesYet: 'No moves yet · Draw a card to begin',
   downloadPgn: 'Download PGN',

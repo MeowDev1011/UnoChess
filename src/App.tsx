@@ -1,5 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Ban, Clock, Layers, Pause, ShieldAlert, Sparkles, Timer, Trophy } from 'lucide-react';
+import {
+  Ban,
+  Check,
+  Clock,
+  Copy,
+  Layers,
+  Pause,
+  ShieldAlert,
+  Sparkles,
+  Timer,
+  Trophy,
+  X,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   BotLevel,
@@ -51,11 +63,16 @@ import { sound } from './utils/audio';
 import {
   applyMatchEloToMyProfile,
   calculateEloDelta,
+  cancelWaitingMatch,
   clearDeviceAccountLocally,
   flattenBoard,
+  getMatchFromServer,
+  loadActiveOnlineMatchId,
   loadDeviceAccount,
   loginWithLichessProfile,
   pushMatchUpdate,
+  saveActiveOnlineMatchId,
+  saveWaitingMagicMatchId,
   subscribeMatch,
   subscribePlayerProfile,
   syncDeviceAccountWithFirestore,
@@ -112,11 +129,14 @@ export default function App() {
   const [onlineMatchId, setOnlineMatchId] = useState<string | null>(null);
   const [onlineMatch, setOnlineMatch] = useState<OnlineMatchDoc | null>(null);
   const [joinToastMsg, setJoinToastMsg] = useState<string | null>(null);
+  const [onlineSyncWarning, setOnlineSyncWarning] = useState<string | null>(null);
+  const [waitingCopied, setWaitingCopied] = useState(false);
   const [onlineEloResult, setOnlineEloResult] = useState<{
     delta: number;
     didWin: boolean;
   } | null>(null);
   const appliedEloMatchesRef = useRef<Set<string>>(new Set());
+  const recoveredMatchOnceRef = useRef<string | null>(null);
   const myProfileRef = useRef<PlayerProfile | null>(null);
   myProfileRef.current = myProfile;
   const lastSeenDuelTextRef = useRef<string>('');
@@ -258,6 +278,47 @@ export default function App() {
       unsub();
     };
   }, [myProfileUid, showOnlineLobby]);
+
+  // Recover an active online match automatically if user reloads or returns from background
+  useEffect(() => {
+    if (
+      !myProfileUid ||
+      pendingJoinMatchId ||
+      showOnlineLobby ||
+      onlineMatchId ||
+      phase !== 'TITLE_MENU'
+    ) {
+      return;
+    }
+    const savedActiveId = loadActiveOnlineMatchId(myProfileUid);
+    if (!savedActiveId || recoveredMatchOnceRef.current === savedActiveId) return;
+    recoveredMatchOnceRef.current = savedActiveId;
+
+    let active = true;
+    void getMatchFromServer(savedActiveId).then((m) => {
+      if (!active || !m) {
+        saveActiveOnlineMatchId(myProfileUid, null);
+        return;
+      }
+      if (m.status === 'active' && (m.hostUid === myProfileUid || m.guestUid === myProfileUid)) {
+        sound.unlock();
+        setMode('online');
+        setOnlineMatchId(m.id);
+        setPhase(m.phase);
+      } else if (m.status === 'waiting' && m.hostUid === myProfileUid) {
+        saveWaitingMagicMatchId(myProfileUid, m.id);
+        saveActiveOnlineMatchId(myProfileUid, null);
+        setMode('online');
+        setShowOnlineLobby(true);
+      } else {
+        saveActiveOnlineMatchId(myProfileUid, null);
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [myProfileUid, onlineMatchId, pendingJoinMatchId, phase, showOnlineLobby]);
 
   const refreshMatchHistory = useCallback(async (uidOverride?: string | null) => {
     const uid = uidOverride !== undefined ? uidOverride : myProfileRef.current?.uid ?? null;
@@ -443,12 +504,15 @@ export default function App() {
     [activeFaction, capturedWhitePieces, capturedBlackPieces]
   );
 
-  // Sync incoming real-time online match snapshots
+  // Sync incoming real-time online match snapshots + immediate server fetch & focus sync
+  const isMatchWaiting = onlineMatch?.status === 'waiting';
   useEffect(() => {
     if (mode !== 'online' || !onlineMatchId) return;
+    let active = true;
 
-    const unsub = subscribeMatch(onlineMatchId, (match) => {
-      if (!match) return;
+    const applyMatchSnapshot = (match: OnlineMatchDoc | null) => {
+      if (!active || !match) return;
+      setOnlineSyncWarning(null);
       setOnlineMatch(match);
 
       if (match.status === 'waiting') {
@@ -532,6 +596,7 @@ export default function App() {
       }
 
       if (match.status === 'finished') {
+        if (activeUid) saveActiveOnlineMatchId(activeUid, null);
         const winnerIsP1 = match.winnerUid === match.p1Uid;
         const wName = match.winnerUid
           ? winnerIsP1
@@ -596,10 +661,38 @@ export default function App() {
       } else {
         setPhase(match.phase);
       }
+    };
+
+    const unsub = subscribeMatch(onlineMatchId, applyMatchSnapshot, () => {
+      if (active) {
+        setOnlineSyncWarning(t('onlineConnectionLost'));
+      }
     });
 
-    return () => unsub();
-  }, [mode, onlineMatchId, persistCompletedMatch, t]);
+    const syncFromServer = () => {
+      void getMatchFromServer(onlineMatchId).then((m) => {
+        if (active && m) applyMatchSnapshot(m);
+      });
+    };
+    syncFromServer();
+
+    const waitPollId = isMatchWaiting ? window.setInterval(syncFromServer, 2000) : null;
+    const onVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        syncFromServer();
+      }
+    };
+    window.addEventListener('focus', onVisibilityOrFocus);
+    document.addEventListener('visibilitychange', onVisibilityOrFocus);
+
+    return () => {
+      active = false;
+      unsub();
+      if (waitPollId !== null) clearInterval(waitPollId);
+      window.removeEventListener('focus', onVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', onVisibilityOrFocus);
+    };
+  }, [isMatchWaiting, mode, onlineMatchId, persistCompletedMatch, t]);
 
   // Helper to push authoritative online updates when playing online
   const pushOnline = useCallback(
@@ -619,8 +712,13 @@ export default function App() {
     sound.startMusic();
     syncAudioState();
     lastSeenDuelTextRef.current = '';
+    if (myProfileRef.current?.uid) {
+      saveActiveOnlineMatchId(myProfileRef.current.uid, matchId);
+    }
     setMode('online');
     setShowOnlineLobby(false);
+    setOnlineSyncWarning(null);
+    setOnlineMatch(null);
     setOnlineMatchId(matchId);
     setOnlineEloResult(null);
     setLastCompletedRecord(null);
@@ -2892,6 +2990,7 @@ export default function App() {
     if (mode !== 'online' || !onlineMatch || !myProfile) return;
     sound.playClick();
     setIsPaused(false);
+    saveActiveOnlineMatchId(myProfile.uid, null);
     const winnerPid: PlayerId = myOnlineRole === 'p1' ? 'p2' : 'p1';
     finishWithWin(winnerPid, 'bannerResignWin', board);
   }, [board, finishWithWin, mode, myOnlineRole, myProfile, onlineMatch]);
@@ -3546,6 +3645,60 @@ export default function App() {
               </button>
             </header>
 
+            {onlineSyncWarning && (
+              <div className="mt-1.5 flex items-center justify-center gap-2 rounded-xl border-2 border-amber-400 bg-amber-950/90 px-3 py-1.5 text-xs font-extrabold text-amber-200 shadow">
+                <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-amber-300 border-t-transparent" />
+                <span>{onlineSyncWarning}</span>
+              </div>
+            )}
+
+            {mode === 'online' && onlineMatch?.status === 'waiting' && (
+              <div className="mt-1.5 space-y-2 rounded-2xl border-2 border-emerald-400 bg-emerald-950/90 p-3 shadow-lg">
+                <div className="flex items-center justify-center gap-2 text-xs font-extrabold text-emerald-200">
+                  <div className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-emerald-300 border-t-transparent" />
+                  <span>{t('onlineMagicWaiting')}</span>
+                </div>
+                <div className="break-all rounded-xl border border-slate-700 bg-slate-950 px-2.5 py-1.5 font-mono text-[10px] text-amber-200">
+                  {`${window.location.origin}${window.location.pathname}?join=${onlineMatch.id}`}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url = `${window.location.origin}${window.location.pathname}?join=${onlineMatch.id}`;
+                      void navigator.clipboard?.writeText(url);
+                      setWaitingCopied(true);
+                      window.setTimeout(() => setWaitingCopied(false), 2000);
+                    }}
+                    className="flex min-h-[36px] flex-1 items-center justify-center gap-1.5 rounded-xl border-2 border-slate-950 bg-amber-400 px-3 text-xs font-extrabold text-slate-950"
+                  >
+                    {waitingCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                    <span>{waitingCopied ? t('onlineMagicCopied') : t('onlineMagicCopy')}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const uid = myProfileRef.current?.uid ?? '';
+                      if (uid) {
+                        saveActiveOnlineMatchId(uid, null);
+                        saveWaitingMagicMatchId(uid, null);
+                      }
+                      if (onlineMatch.hostUid === uid) {
+                        void cancelWaitingMatch(onlineMatch.id);
+                      }
+                      setOnlineMatchId(null);
+                      setOnlineMatch(null);
+                      setShowOnlineLobby(true);
+                    }}
+                    className="flex min-h-[36px] items-center justify-center gap-1 rounded-xl border border-rose-500/70 bg-rose-950/70 px-3 text-xs font-bold text-rose-200"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    <span>{t('onlineCancelChallenge')}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
             {joinToastMsg && (
               <div className="mt-1.5 flex items-center justify-center gap-2 rounded-xl border-2 border-emerald-400 bg-emerald-950/90 px-3 py-1.5 text-xs font-extrabold text-emerald-200 shadow">
                 <Sparkles className="h-4 w-4 shrink-0 text-emerald-300" />
@@ -3761,6 +3914,9 @@ export default function App() {
           syncAudioState();
           setIsPaused(false);
           if (mode === 'online') {
+            if (myProfileRef.current?.uid) {
+              saveActiveOnlineMatchId(myProfileRef.current.uid, null);
+            }
             setOnlineMatchId(null);
             setOnlineMatch(null);
             setShowOnlineLobby(true);
@@ -3818,6 +3974,9 @@ export default function App() {
           sound.stopMusic();
           syncAudioState();
           if (mode === 'online') {
+            if (myProfileRef.current?.uid) {
+              saveActiveOnlineMatchId(myProfileRef.current.uid, null);
+            }
             setOnlineMatchId(null);
             setOnlineMatch(null);
             setPhase('TITLE_MENU');

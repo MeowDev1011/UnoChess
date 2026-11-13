@@ -7,11 +7,11 @@ import {
   getFirestore,
   onSnapshot,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
   where,
-  writeBatch,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { createInitialBoard } from '../engine/chess';
@@ -43,6 +43,10 @@ const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 
 const DEVICE_ACCOUNT_KEY = 'unochess_device_account_v1';
+const WAITING_MAGIC_KEY = 'unochess_waiting_magic_v1';
+const PENDING_CHALLENGE_KEY = 'unochess_waiting_challenge_v1';
+const ACTIVE_MATCH_KEY = 'unochess_active_online_match_v1';
+const SESSION_MAX_AGE_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 // Boot-time connection check
 async function testConnection() {
@@ -161,11 +165,69 @@ export function clearDeviceAccountLocally(): void {
   clearStoredLichessToken();
 }
 
-export function handleFirestoreError(
+function saveUidScopedId(storageKey: string, uid: string, id: string | null): void {
+  try {
+    if (!id || !uid) {
+      localStorage.removeItem(storageKey);
+      return;
+    }
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({ uid, id, savedAtMs: Date.now() })
+    );
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+function loadUidScopedId(storageKey: string, uid: string): string | null {
+  if (!uid) return null;
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { uid?: string; id?: string; savedAtMs?: number };
+    if (
+      parsed.uid !== uid ||
+      !parsed.id ||
+      (parsed.savedAtMs && Date.now() - parsed.savedAtMs > SESSION_MAX_AGE_MS)
+    ) {
+      return null;
+    }
+    return String(parsed.id);
+  } catch {
+    return null;
+  }
+}
+
+export function saveWaitingMagicMatchId(uid: string, matchId: string | null): void {
+  saveUidScopedId(WAITING_MAGIC_KEY, uid, matchId);
+}
+
+export function loadWaitingMagicMatchId(uid: string): string | null {
+  return loadUidScopedId(WAITING_MAGIC_KEY, uid);
+}
+
+export function savePendingChallengeId(uid: string, challengeId: string | null): void {
+  saveUidScopedId(PENDING_CHALLENGE_KEY, uid, challengeId);
+}
+
+export function loadPendingChallengeId(uid: string): string | null {
+  return loadUidScopedId(PENDING_CHALLENGE_KEY, uid);
+}
+
+export function saveActiveOnlineMatchId(uid: string, matchId: string | null): void {
+  saveUidScopedId(ACTIVE_MATCH_KEY, uid, matchId);
+}
+
+export function loadActiveOnlineMatchId(uid: string): string | null {
+  return loadUidScopedId(ACTIVE_MATCH_KEY, uid);
+}
+
+function buildFirestoreError(
   error: unknown,
   operationType: OperationType,
   path: string | null
-): never {
+): Error {
   const localAcc = loadDeviceAccount();
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
@@ -177,7 +239,15 @@ export function handleFirestoreError(
     path,
   };
   console.error('Database Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  return new Error(JSON.stringify(errInfo));
+}
+
+export function handleFirestoreError(
+  error: unknown,
+  operationType: OperationType,
+  path: string | null
+): never {
+  throw buildFirestoreError(error, operationType, path);
 }
 
 export function flattenBoard(board: (ChessPiece | null)[][]): (ChessPiece | null)[] {
@@ -383,7 +453,8 @@ export async function syncDeviceAccountWithFirestore(
 
 export function subscribePlayerProfile(
   uid: string,
-  cb: (profile: PlayerProfile | null) => void
+  cb: (profile: PlayerProfile | null) => void,
+  onError?: (err: Error) => void
 ): () => void {
   const path = `players/${uid}`;
   return onSnapshot(
@@ -397,7 +468,10 @@ export function subscribePlayerProfile(
       saveDeviceAccountLocally(prof);
       cb(prof);
     },
-    (error) => handleFirestoreError(error, OperationType.GET, path)
+    (error) => {
+      const err = buildFirestoreError(error, OperationType.GET, path);
+      onError?.(err);
+    }
   );
 }
 
@@ -551,8 +625,39 @@ export async function applyMatchEloToMyProfile(
   }
 }
 
+function mapDocToChallenge(d: Record<string, unknown>): LobbyChallenge {
+  return {
+    id: String(d.id),
+    creatorUid: String(d.creatorUid),
+    creatorNickname: String(d.creatorNickname),
+    creatorElo: Number(d.creatorElo),
+    timeControlId: String(d.timeControlId),
+    timeControlLabel: String(d.timeControlLabel),
+    minutes: Number(d.minutes),
+    increment: Number(d.increment),
+    preferredColor: (d.preferredColor as PreferredColor) || 'random',
+    status: d.status as 'open' | 'matched' | 'cancelled',
+    matchedMatchId: String(d.matchedMatchId ?? ''),
+    opponentUid: String(d.opponentUid ?? ''),
+  };
+}
+
+export async function getChallengeFromServer(
+  challengeId: string
+): Promise<LobbyChallenge | null> {
+  if (!challengeId) return null;
+  try {
+    const snap = await getDocFromServer(doc(db, 'challenges', challengeId));
+    if (!snap.exists()) return null;
+    return mapDocToChallenge(snap.data() as Record<string, unknown>);
+  } catch {
+    return null;
+  }
+}
+
 export function subscribeOpenChallenges(
-  cb: (challenges: LobbyChallenge[]) => void
+  cb: (challenges: LobbyChallenge[]) => void,
+  onError?: (err: Error) => void
 ): () => void {
   const path = 'challenges';
   const q = query(collection(db, 'challenges'), where('status', '==', 'open'));
@@ -561,37 +666,33 @@ export function subscribeOpenChallenges(
     (snap) => {
       const list: LobbyChallenge[] = [];
       snap.forEach((docSnap) => {
-        const d = docSnap.data();
-        list.push({
-          id: String(d.id),
-          creatorUid: String(d.creatorUid),
-          creatorNickname: String(d.creatorNickname),
-          creatorElo: Number(d.creatorElo),
-          timeControlId: String(d.timeControlId),
-          timeControlLabel: String(d.timeControlLabel),
-          minutes: Number(d.minutes),
-          increment: Number(d.increment),
-          preferredColor: (d.preferredColor as PreferredColor) || 'random',
-          status: d.status as 'open' | 'matched' | 'cancelled',
-          matchedMatchId: String(d.matchedMatchId ?? ''),
-          opponentUid: String(d.opponentUid ?? ''),
-        });
+        list.push(mapDocToChallenge(docSnap.data() as Record<string, unknown>));
       });
       list.sort((a, b) => b.id.localeCompare(a.id));
       cb(list);
     },
-    (error) => handleFirestoreError(error, OperationType.LIST, path)
+    (error) => {
+      const err = buildFirestoreError(error, OperationType.LIST, path);
+      onError?.(err);
+    }
   );
 }
 
 export function subscribeMyMatchedChallenges(
   uid: string,
-  cb: (matchedMatchId: string) => void
+  cb: (matchedMatchId: string, challengeId: string) => void,
+  activeChallengeId?: string | null,
+  onError?: (err: Error) => void
 ): () => void {
   const path = 'challenges';
-  const q = query(collection(db, 'challenges'), where('creatorUid', '==', uid));
+  // Query explicitly satisfies firestore.rules `allow list: if existing().status == 'open' || existing().status == 'matched'`
+  const q = query(
+    collection(db, 'challenges'),
+    where('creatorUid', '==', uid),
+    where('status', 'in', ['open', 'matched'])
+  );
   let initialSnapshotHandled = false;
-  const ignoredOldMatchedIds = new Set<string>();
+  const handledMatchedIds = new Set<string>();
   return onSnapshot(
     q,
     (snap) => {
@@ -600,27 +701,41 @@ export function subscribeMyMatchedChallenges(
         snap.forEach((docSnap) => {
           const d = docSnap.data();
           if (d.status === 'matched') {
-            ignoredOldMatchedIds.add(docSnap.id);
+            // If this is our active waiting challenge and it matched while reloading/away, enter immediately!
+            if (
+              activeChallengeId &&
+              docSnap.id === activeChallengeId &&
+              typeof d.matchedMatchId === 'string' &&
+              d.matchedMatchId
+            ) {
+              handledMatchedIds.add(docSnap.id);
+              cb(d.matchedMatchId, docSnap.id);
+            } else {
+              handledMatchedIds.add(docSnap.id);
+            }
           }
         });
         return;
       }
       snap.docChanges().forEach((change) => {
         if (change.type === 'added' || change.type === 'modified') {
-          if (ignoredOldMatchedIds.has(change.doc.id)) return;
+          if (handledMatchedIds.has(change.doc.id)) return;
           const d = change.doc.data();
           if (
             d.status === 'matched' &&
             typeof d.matchedMatchId === 'string' &&
             d.matchedMatchId
           ) {
-            ignoredOldMatchedIds.add(change.doc.id);
-            cb(d.matchedMatchId);
+            handledMatchedIds.add(change.doc.id);
+            cb(d.matchedMatchId, change.doc.id);
           }
         }
       });
     },
-    (error) => handleFirestoreError(error, OperationType.LIST, path)
+    (error) => {
+      const err = buildFirestoreError(error, OperationType.LIST, path);
+      onError?.(err);
+    }
   );
 }
 
@@ -748,6 +863,12 @@ function buildInitialMatchPayload(params: {
   };
 }
 
+function ensureSafeNick(raw: string, fallback = 'Player'): string {
+  const clean = raw.trim().slice(0, 20);
+  if (clean.length >= 2) return clean;
+  return (clean + fallback).slice(0, 20);
+}
+
 export async function acceptLobbyChallenge(
   challenge: LobbyChallenge,
   accepter: PlayerProfile
@@ -764,10 +885,10 @@ export async function acceptLobbyChallenge(
     inviteType: 'lobby',
     status: 'active',
     hostUid: challenge.creatorUid,
-    hostNickname: challenge.creatorNickname,
+    hostNickname: ensureSafeNick(challenge.creatorNickname, 'Host'),
     hostElo: challenge.creatorElo,
     guestUid: accepter.uid,
-    guestNickname: accepter.nickname,
+    guestNickname: ensureSafeNick(accepter.nickname, 'Guest'),
     guestElo: accepterElo,
     timeControlId: challenge.timeControlId,
     timeControlLabel: challenge.timeControlLabel,
@@ -777,17 +898,28 @@ export async function acceptLobbyChallenge(
   });
 
   try {
-    const batch = writeBatch(db);
-    batch.set(matchRef, matchPayload);
-    batch.update(challengeRef, {
-      status: 'matched',
-      opponentUid: accepter.uid,
-      matchedMatchId: matchId,
-      updatedAt: serverTimestamp(),
+    await runTransaction(db, async (tx) => {
+      const chSnap = await tx.get(challengeRef);
+      if (!chSnap.exists()) {
+        throw new Error('CHALLENGE_UNAVAILABLE');
+      }
+      const chData = chSnap.data();
+      if (chData.status !== 'open' || chData.creatorUid === accepter.uid) {
+        throw new Error('CHALLENGE_UNAVAILABLE');
+      }
+      tx.set(matchRef, matchPayload);
+      tx.update(challengeRef, {
+        status: 'matched',
+        opponentUid: accepter.uid,
+        matchedMatchId: matchId,
+        updatedAt: serverTimestamp(),
+      });
     });
-    await batch.commit();
     return matchId;
   } catch (error) {
+    if (error instanceof Error && error.message === 'CHALLENGE_UNAVAILABLE') {
+      throw error;
+    }
     handleFirestoreError(error, OperationType.WRITE, `matches/${matchId}`);
   }
 }
@@ -807,7 +939,7 @@ export async function createMagicLinkMatch(
     inviteType: 'magic_link',
     status: 'waiting',
     hostUid: host.uid,
-    hostNickname: host.nickname,
+    hostNickname: ensureSafeNick(host.nickname, 'Host'),
     hostElo: hostCatElo,
     guestUid: '',
     guestNickname: '',
@@ -827,36 +959,71 @@ export async function createMagicLinkMatch(
   }
 }
 
+export type JoinMagicLinkResult =
+  | { status: 'joined'; match: OnlineMatchDoc }
+  | { status: 'already_in'; match: OnlineMatchDoc }
+  | { status: 'self_waiting'; match: OnlineMatchDoc }
+  | { status: 'unavailable' };
+
 export async function joinMagicLinkMatch(
   matchId: string,
   guest: PlayerProfile
-): Promise<'joined' | 'already_in' | 'unavailable'> {
+): Promise<JoinMagicLinkResult> {
   const path = `matches/${matchId}`;
   const ref = doc(db, 'matches', matchId);
   try {
-    const snap = await getDoc(ref);
-    if (!snap.exists()) return 'unavailable';
-    const d = snap.data();
+    const result = await runTransaction(db, async (tx): Promise<JoinMagicLinkResult> => {
+      const snap = await tx.get(ref);
+      if (!snap.exists()) return { status: 'unavailable' };
+      const d = snap.data() as Record<string, unknown>;
+      const mapped = mapDocToOnlineMatch(d);
 
-    if (d.hostUid === guest.uid || d.guestUid === guest.uid) {
-      return 'already_in';
-    }
-    if (d.status !== 'waiting' || d.inviteType !== 'magic_link') {
-      return 'unavailable';
-    }
+      if (mapped.status === 'finished') {
+        return { status: 'unavailable' };
+      }
 
-    const matchCategory = getTimeControlCategoryFromMinutes(Number(d.minutes ?? 0));
-    const guestCatElo = getProfileEloForCategory(guest, matchCategory);
+      if (mapped.hostUid === guest.uid) {
+        if (mapped.status === 'waiting') {
+          // Host opened their own link while still waiting for friend
+          return { status: 'self_waiting', match: mapped };
+        }
+        return { status: 'already_in', match: mapped };
+      }
 
-    await updateDoc(ref, {
-      status: 'active',
-      guestUid: guest.uid,
-      guestNickname: guest.nickname,
-      guestElo: Math.round(guestCatElo),
-      p2Uid: guest.uid,
-      updatedAt: serverTimestamp(),
+      if (mapped.guestUid === guest.uid) {
+        return { status: 'already_in', match: mapped };
+      }
+
+      if (mapped.status !== 'waiting' || mapped.inviteType !== 'magic_link') {
+        return { status: 'unavailable' };
+      }
+
+      const matchCategory = getTimeControlCategoryFromMinutes(mapped.minutes);
+      const guestCatElo = Math.round(getProfileEloForCategory(guest, matchCategory));
+      const safeGuestNick = ensureSafeNick(guest.nickname, 'Guest');
+
+      tx.update(ref, {
+        status: 'active',
+        guestUid: guest.uid,
+        guestNickname: safeGuestNick,
+        guestElo: guestCatElo,
+        p2Uid: guest.uid,
+        updatedAt: serverTimestamp(),
+      });
+
+      return {
+        status: 'joined',
+        match: {
+          ...mapped,
+          status: 'active',
+          guestUid: guest.uid,
+          guestNickname: safeGuestNick,
+          guestElo: guestCatElo,
+          p2Uid: guest.uid,
+        },
+      };
     });
-    return 'joined';
+    return result;
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -875,9 +1042,76 @@ export async function cancelWaitingMatch(matchId: string): Promise<void> {
   }
 }
 
+function mapDocToOnlineMatch(d: Record<string, unknown>): OnlineMatchDoc {
+  return {
+    id: String(d.id),
+    inviteType: d.inviteType as 'lobby' | 'magic_link',
+    status: d.status as 'waiting' | 'active' | 'finished',
+    hostUid: String(d.hostUid),
+    hostNickname: String(d.hostNickname),
+    hostElo: Number(d.hostElo),
+    guestUid: String(d.guestUid ?? ''),
+    guestNickname: String(d.guestNickname ?? ''),
+    guestElo: Number(d.guestElo ?? 0),
+    timeControlId: String(d.timeControlId),
+    timeControlLabel: String(d.timeControlLabel),
+    minutes: Number(d.minutes),
+    increment: Number(d.increment),
+    p1Uid: String(d.p1Uid),
+    p2Uid: String(d.p2Uid ?? ''),
+    p1Faction: d.p1Faction as Faction,
+    activePlayer: d.activePlayer as 'p1' | 'p2',
+    p1TimeMs: Number(d.p1TimeMs),
+    p2TimeMs: Number(d.p2TimeMs),
+    stateVersion: Number(d.stateVersion),
+    turnsPlayed: Number(d.turnsPlayed),
+    boardFlat: (d.boardFlat as (ChessPiece | null)[]) || [],
+    drawPile: (d.drawPile as OnlineMatchDoc['drawPile']) || [],
+    discardPile: (d.discardPile as OnlineMatchDoc['discardPile']) || [],
+    capturedWhitePieces: (d.capturedWhitePieces as ChessPiece[]) || [],
+    capturedBlackPieces: (d.capturedBlackPieces as ChessPiece[]) || [],
+    exiledPieces: (d.exiledPieces as ChessPiece[]) || [],
+    enPassantTarget: (d.enPassantTarget as OnlineMatchDoc['enPassantTarget']) ?? null,
+    currentCard: (d.currentCard as OnlineMatchDoc['currentCard']) ?? null,
+    cardFaceDown: Boolean(d.cardFaceDown),
+    phase: d.phase as OnlineMatchDoc['phase'],
+    movesRemaining: Number(d.movesRemaining ?? 0),
+    skipOpponentTurns: Number(d.skipOpponentTurns ?? 0),
+    wildTeleportPending: Boolean(d.wildTeleportPending),
+    plus2Remaining: Number(d.plus2Remaining ?? 0),
+    plus4Remaining: Number(d.plus4Remaining ?? 0),
+    pendingWildPieceType: String(d.pendingWildPieceType ?? ''),
+    pendingPromotion: (d.pendingPromotion as OnlineMatchDoc['pendingPromotion']) ?? null,
+    bannerKey: String(d.bannerKey ?? ''),
+    bannerParams: (d.bannerParams as Record<string, string | number>) ?? {},
+    winnerUid: String(d.winnerUid ?? ''),
+    winReasonKey: String(d.winReasonKey ?? ''),
+    eloDelta: Number(d.eloDelta ?? 0),
+    lastChainColor: (d.lastChainColor as CardColor | '') ?? '',
+    lastChainBy: (d.lastChainBy as PlayerId | '') ?? '',
+    isFirstMoveOfTurn: d.isFirstMoveOfTurn !== undefined ? Boolean(d.isFirstMoveOfTurn) : true,
+    moveHistory: (d.moveHistory as MoveHistoryEntry[]) ?? [],
+    lastDuelText: String(d.lastDuelText ?? ''),
+  };
+}
+
+export async function getMatchFromServer(
+  matchId: string
+): Promise<OnlineMatchDoc | null> {
+  if (!matchId) return null;
+  try {
+    const snap = await getDocFromServer(doc(db, 'matches', matchId));
+    if (!snap.exists()) return null;
+    return mapDocToOnlineMatch(snap.data() as Record<string, unknown>);
+  } catch {
+    return null;
+  }
+}
+
 export function subscribeMatch(
   matchId: string,
-  cb: (match: OnlineMatchDoc | null) => void
+  cb: (match: OnlineMatchDoc | null) => void,
+  onError?: (err: Error) => void
 ): () => void {
   const path = `matches/${matchId}`;
   return onSnapshot(
@@ -887,59 +1121,12 @@ export function subscribeMatch(
         cb(null);
         return;
       }
-      const d = snap.data();
-      cb({
-        id: String(d.id),
-        inviteType: d.inviteType as 'lobby' | 'magic_link',
-        status: d.status as 'waiting' | 'active' | 'finished',
-        hostUid: String(d.hostUid),
-        hostNickname: String(d.hostNickname),
-        hostElo: Number(d.hostElo),
-        guestUid: String(d.guestUid ?? ''),
-        guestNickname: String(d.guestNickname ?? ''),
-        guestElo: Number(d.guestElo ?? 0),
-        timeControlId: String(d.timeControlId),
-        timeControlLabel: String(d.timeControlLabel),
-        minutes: Number(d.minutes),
-        increment: Number(d.increment),
-        p1Uid: String(d.p1Uid),
-        p2Uid: String(d.p2Uid ?? ''),
-        p1Faction: d.p1Faction as Faction,
-        activePlayer: d.activePlayer as 'p1' | 'p2',
-        p1TimeMs: Number(d.p1TimeMs),
-        p2TimeMs: Number(d.p2TimeMs),
-        stateVersion: Number(d.stateVersion),
-        turnsPlayed: Number(d.turnsPlayed),
-        boardFlat: (d.boardFlat as (ChessPiece | null)[]) || [],
-        drawPile: (d.drawPile as OnlineMatchDoc['drawPile']) || [],
-        discardPile: (d.discardPile as OnlineMatchDoc['discardPile']) || [],
-        capturedWhitePieces: (d.capturedWhitePieces as ChessPiece[]) || [],
-        capturedBlackPieces: (d.capturedBlackPieces as ChessPiece[]) || [],
-        exiledPieces: (d.exiledPieces as ChessPiece[]) || [],
-        enPassantTarget: d.enPassantTarget ?? null,
-        currentCard: d.currentCard ?? null,
-        cardFaceDown: Boolean(d.cardFaceDown),
-        phase: d.phase as OnlineMatchDoc['phase'],
-        movesRemaining: Number(d.movesRemaining ?? 0),
-        skipOpponentTurns: Number(d.skipOpponentTurns ?? 0),
-        wildTeleportPending: Boolean(d.wildTeleportPending),
-        plus2Remaining: Number(d.plus2Remaining ?? 0),
-        plus4Remaining: Number(d.plus4Remaining ?? 0),
-        pendingWildPieceType: String(d.pendingWildPieceType ?? ''),
-        pendingPromotion: d.pendingPromotion ?? null,
-        bannerKey: String(d.bannerKey ?? ''),
-        bannerParams: (d.bannerParams as Record<string, string | number>) ?? {},
-        winnerUid: String(d.winnerUid ?? ''),
-        winReasonKey: String(d.winReasonKey ?? ''),
-        eloDelta: Number(d.eloDelta ?? 0),
-        lastChainColor: (d.lastChainColor as CardColor | '') ?? '',
-        lastChainBy: (d.lastChainBy as PlayerId | '') ?? '',
-        isFirstMoveOfTurn: d.isFirstMoveOfTurn !== undefined ? Boolean(d.isFirstMoveOfTurn) : true,
-        moveHistory: (d.moveHistory as MoveHistoryEntry[]) ?? [],
-        lastDuelText: String(d.lastDuelText ?? ''),
-      });
+      cb(mapDocToOnlineMatch(snap.data() as Record<string, unknown>));
     },
-    (error) => handleFirestoreError(error, OperationType.GET, path)
+    (error) => {
+      const err = buildFirestoreError(error, OperationType.GET, path);
+      onError?.(err);
+    }
   );
 }
 

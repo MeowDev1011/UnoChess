@@ -33,10 +33,16 @@ import {
   cancelWaitingMatch,
   createLobbyChallenge,
   createMagicLinkMatch,
+  getChallengeFromServer,
+  getMatchFromServer,
   joinMagicLinkMatch,
+  loadPendingChallengeId,
+  loadWaitingMagicMatchId,
   loginWithLichessProfile,
   refreshLichessProfileIfLinked,
   saveDevicePlayerAccount,
+  savePendingChallengeId,
+  saveWaitingMagicMatchId,
   subscribeMatch,
   subscribeMyMatchedChallenges,
   subscribeOpenChallenges,
@@ -100,6 +106,7 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
   const [challenges, setChallenges] = useState<LobbyChallenge[]>([]);
   const [creatingChallenge, setCreatingChallenge] = useState(false);
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
+  const [pendingChallengeId, setPendingChallengeId] = useState<string | null>(null);
 
   // Magic link state
   const [magicMatchId, setMagicMatchId] = useState<string | null>(null);
@@ -111,6 +118,7 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
   const [deepLinkRetryable, setDeepLinkRetryable] = useState(false);
   const [lobbyError, setLobbyError] = useState('');
   const attemptedJoinRef = useRef<string | null>(null);
+  const enteredMatchIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -238,28 +246,164 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
     };
   }, [completeLichessCallback]);
 
-  // Subscribe to real open challenges and matched transitions
   const profileUid = profile?.uid ?? '';
+
+  const enterMatchSafely = useCallback(
+    (matchId: string, notice?: string) => {
+      if (!matchId || enteredMatchIdRef.current === matchId) return;
+      enteredMatchIdRef.current = matchId;
+      if (profileUid) {
+        saveWaitingMagicMatchId(profileUid, null);
+        savePendingChallengeId(profileUid, null);
+      }
+      setPendingChallengeId(null);
+      setMagicMatchId(null);
+      onEnterMatch(matchId, notice);
+    },
+    [onEnterMatch, profileUid]
+  );
+
+  // Restore any active waiting Magic Link or open Challenge when entering/reloading the lobby
+  useEffect(() => {
+    if (!profileUid) {
+      setPendingChallengeId(null);
+      setMagicMatchId(null);
+      return;
+    }
+
+    let active = true;
+    const savedMagic = loadWaitingMagicMatchId(profileUid);
+    if (savedMagic && (!pendingJoinMatchId || pendingJoinMatchId === savedMagic)) {
+      void getMatchFromServer(savedMagic).then((m) => {
+        if (!active || !mountedRef.current) return;
+        if (!m || m.hostUid !== profileUid || m.status === 'finished') {
+          saveWaitingMagicMatchId(profileUid, null);
+          return;
+        }
+        if (m.status === 'active' && m.guestUid) {
+          sound.playSpecial();
+          const notice = t('onlineMagicJoinedToast', {
+            name: m.guestNickname,
+            elo: m.guestElo,
+          });
+          enterMatchSafely(m.id, notice);
+          return;
+        }
+        if (m.status === 'waiting') {
+          setTab('magic');
+          setMagicMatchId(m.id);
+          if (!pendingJoinMatchId) {
+            setJoinNotice(t('onlineMagicRestored'));
+          }
+        }
+      });
+    }
+
+    const savedChallenge = loadPendingChallengeId(profileUid);
+    if (savedChallenge) {
+      setPendingChallengeId(savedChallenge);
+      void getChallengeFromServer(savedChallenge).then((ch) => {
+        if (!active || !mountedRef.current) return;
+        if (!ch || ch.creatorUid !== profileUid || ch.status === 'cancelled') {
+          savePendingChallengeId(profileUid, null);
+          setPendingChallengeId(null);
+          return;
+        }
+        if (ch.status === 'matched' && ch.matchedMatchId) {
+          sound.playSpecial();
+          enterMatchSafely(ch.matchedMatchId);
+        }
+      });
+    }
+
+    return () => {
+      active = false;
+    };
+  }, [enterMatchSafely, pendingJoinMatchId, profileUid, t]);
+
+  // Subscribe to real open challenges in public lobby
   useEffect(() => {
     if (!profileUid) return;
-    const unsubOpen = subscribeOpenChallenges((list) => {
-      setChallenges(list);
-    });
-    const unsubMatched = subscribeMyMatchedChallenges(profileUid, (matchedMatchId) => {
-      sound.playSpecial();
-      onEnterMatch(matchedMatchId);
-    });
+    const unsubOpen = subscribeOpenChallenges(
+      (list) => {
+        setChallenges(list);
+      },
+      () => {
+        if (mountedRef.current) {
+          setLobbyError(t('onlineConnectionLost'));
+        }
+      }
+    );
     return () => {
       unsubOpen();
-      unsubMatched();
     };
-  }, [onEnterMatch, profileUid]);
+  }, [profileUid, t]);
 
-  // Subscribe to host's waiting Magic Link match so host gets notified the instant friend joins
+  // Keep track of our active open challenge ID (either restored or present in feed)
+  const myChallengeFromFeedId =
+    challenges.find((c) => c.creatorUid === profileUid)?.id ?? null;
+  const effectiveChallengeId = pendingChallengeId || myChallengeFromFeedId;
+
+  // Subscribe + server-watchdog for when someone accepts our public lobby challenge
+  useEffect(() => {
+    if (!profileUid) return;
+    let active = true;
+
+    const unsubMatched = subscribeMyMatchedChallenges(
+      profileUid,
+      (matchedMatchId) => {
+        if (!active) return;
+        sound.playSpecial();
+        enterMatchSafely(matchedMatchId);
+      },
+      effectiveChallengeId,
+      () => {
+        // Keep polling via watchdog if snapshot stream hiccups
+      }
+    );
+
+    const checkPendingChallengeFromServer = () => {
+      if (!effectiveChallengeId) return;
+      void getChallengeFromServer(effectiveChallengeId).then((ch) => {
+        if (!active || !mountedRef.current || !ch) return;
+        if (ch.status === 'matched' && ch.matchedMatchId) {
+          sound.playSpecial();
+          enterMatchSafely(ch.matchedMatchId);
+        } else if (ch.status === 'cancelled') {
+          savePendingChallengeId(profileUid, null);
+          setPendingChallengeId(null);
+        }
+      });
+    };
+
+    const pollId = effectiveChallengeId
+      ? window.setInterval(checkPendingChallengeFromServer, 2000)
+      : null;
+
+    const onVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        checkPendingChallengeFromServer();
+      }
+    };
+    window.addEventListener('focus', onVisibilityOrFocus);
+    document.addEventListener('visibilitychange', onVisibilityOrFocus);
+
+    return () => {
+      active = false;
+      unsubMatched();
+      if (pollId !== null) clearInterval(pollId);
+      window.removeEventListener('focus', onVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', onVisibilityOrFocus);
+    };
+  }, [effectiveChallengeId, enterMatchSafely, profileUid]);
+
+  // Subscribe + server-watchdog for host's waiting Magic Link match
   useEffect(() => {
     if (!magicMatchId) return;
-    const unsub = subscribeMatch(magicMatchId, (match) => {
-      if (!match) return;
+    let active = true;
+
+    const handleMagicSnapshot = (match: Awaited<ReturnType<typeof getMatchFromServer>>) => {
+      if (!active || !mountedRef.current || !match) return;
       if (match.status === 'active' && match.guestUid) {
         sound.playSpecial();
         const notice = t('onlineMagicJoinedToast', {
@@ -267,12 +411,39 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
           elo: match.guestElo,
         });
         setJoinNotice(notice);
+        enterMatchSafely(match.id, notice);
+      } else if (match.status === 'finished') {
+        if (profileUid) saveWaitingMagicMatchId(profileUid, null);
         setMagicMatchId(null);
-        onEnterMatch(match.id, notice);
       }
+    };
+
+    const unsub = subscribeMatch(magicMatchId, handleMagicSnapshot, () => {
+      // Keep polling via watchdog if snapshot stream hiccups
     });
-    return () => unsub();
-  }, [magicMatchId, onEnterMatch, t]);
+
+    const checkMagicFromServer = () => {
+      void getMatchFromServer(magicMatchId).then(handleMagicSnapshot);
+    };
+    checkMagicFromServer();
+
+    const pollId = window.setInterval(checkMagicFromServer, 2000);
+    const onVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        checkMagicFromServer();
+      }
+    };
+    window.addEventListener('focus', onVisibilityOrFocus);
+    document.addEventListener('visibilitychange', onVisibilityOrFocus);
+
+    return () => {
+      active = false;
+      unsub();
+      clearInterval(pollId);
+      window.removeEventListener('focus', onVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', onVisibilityOrFocus);
+    };
+  }, [enterMatchSafely, magicMatchId, profileUid, t]);
 
   // Handle ?join=<matchId> magic link safely once user has an account / Lichess profile
   const attemptMagicLinkJoin = useCallback(
@@ -284,10 +455,18 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
       try {
         const res = await joinMagicLinkMatch(matchId, activeProfile);
         if (!mountedRef.current) return;
-        if (res === 'joined' || res === 'already_in') {
+
+        if (res.status === 'joined' || res.status === 'already_in') {
           sound.playSpecial();
           onClearPendingJoin();
-          onEnterMatch(matchId);
+          enterMatchSafely(res.match.id);
+        } else if (res.status === 'self_waiting') {
+          // Host opened their own magic link while still waiting — keep waiting screen open instead of freezing!
+          onClearPendingJoin();
+          saveWaitingMagicMatchId(activeProfile.uid, res.match.id);
+          setTab('magic');
+          setMagicMatchId(res.match.id);
+          setJoinNotice(t('onlineMagicSelfLink'));
         } else {
           setDeepLinkError(t('onlineMagicInvalid'));
           onClearPendingJoin();
@@ -301,7 +480,7 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
         if (mountedRef.current) setJoiningDeepLink(false);
       }
     },
-    [onClearPendingJoin, onEnterMatch, t]
+    [enterMatchSafely, onClearPendingJoin, t]
   );
 
   useEffect(() => {
@@ -394,7 +573,9 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
     setLobbyError('');
     setCreatingChallenge(true);
     try {
-      await createLobbyChallenge(profile, selectedTimeControl, preferredColor);
+      const id = await createLobbyChallenge(profile, selectedTimeControl, preferredColor);
+      savePendingChallengeId(profile.uid, id);
+      setPendingChallengeId(id);
     } catch {
       setLobbyError(t('onlineLobbyError'));
     } finally {
@@ -405,6 +586,10 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
   const handleCancelChallenge = async (challengeId: string) => {
     sound.playClick();
     setLobbyError('');
+    if (profile) {
+      savePendingChallengeId(profile.uid, null);
+    }
+    setPendingChallengeId(null);
     try {
       await cancelLobbyChallenge(challengeId);
     } catch {
@@ -419,9 +604,13 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
     setAcceptingId(challenge.id);
     try {
       const matchId = await acceptLobbyChallenge(challenge, profile);
-      onEnterMatch(matchId);
-    } catch {
-      setLobbyError(t('onlineLobbyError'));
+      enterMatchSafely(matchId);
+    } catch (err) {
+      if (err instanceof Error && err.message === 'CHALLENGE_UNAVAILABLE') {
+        setLobbyError(t('onlineChallengeTaken'));
+      } else {
+        setLobbyError(t('onlineLobbyError'));
+      }
     } finally {
       setAcceptingId(null);
     }
@@ -431,10 +620,12 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
     if (!profile || creatingMagic) return;
     sound.playClick();
     setLobbyError('');
+    setJoinNotice(null);
     setCreatingMagic(true);
     setCopiedLink(false);
     try {
       const id = await createMagicLinkMatch(profile, selectedTimeControl, preferredColor);
+      saveWaitingMagicMatchId(profile.uid, id);
       setMagicMatchId(id);
     } catch {
       setLobbyError(t('onlineLobbyError'));
@@ -447,7 +638,11 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
     if (!magicMatchId) return;
     sound.playClick();
     setLobbyError('');
+    setJoinNotice(null);
     const id = magicMatchId;
+    if (profile) {
+      saveWaitingMagicMatchId(profile.uid, null);
+    }
     setMagicMatchId(null);
     try {
       await cancelWaitingMatch(id);
@@ -660,6 +855,12 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
             onClick={() => {
               sound.playClick();
               setEditingNickname(false);
+              setMagicMatchId(null);
+              setPendingChallengeId(null);
+              setChallenges([]);
+              setJoinNotice(null);
+              attemptedJoinRef.current = null;
+              enteredMatchIdRef.current = null;
               onSwitchAccount();
             }}
             aria-label={t('onlineSignOutBtn')}
