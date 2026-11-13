@@ -103,6 +103,7 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
   const [joinNotice, setJoinNotice] = useState<string | null>(null);
   const [joiningDeepLink, setJoiningDeepLink] = useState(false);
   const [deepLinkError, setDeepLinkError] = useState('');
+  const [deepLinkRetryable, setDeepLinkRetryable] = useState(false);
   const [lobbyError, setLobbyError] = useState('');
   const attemptedJoinRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
@@ -268,38 +269,42 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
     return () => unsub();
   }, [magicMatchId, onEnterMatch, t]);
 
-  // Handle ?join=<matchId> magic link safely once user has a mini-account / Lichess profile
-  useEffect(() => {
-    if (!pendingJoinMatchId || !profile) return;
-    if (attemptedJoinRef.current === pendingJoinMatchId) return;
-    attemptedJoinRef.current = pendingJoinMatchId;
+  // Handle ?join=<matchId> magic link safely once user has an account / Lichess profile
+  const attemptMagicLinkJoin = useCallback(
+    async (matchId: string, activeProfile: PlayerProfile) => {
+      setJoiningDeepLink(true);
+      setDeepLinkError('');
+      setDeepLinkRetryable(false);
 
-    setJoiningDeepLink(true);
-    setDeepLinkError('');
-
-    void (async () => {
       try {
-        const res = await joinMagicLinkMatch(pendingJoinMatchId, profile);
+        const res = await joinMagicLinkMatch(matchId, activeProfile);
         if (!mountedRef.current) return;
         if (res === 'joined' || res === 'already_in') {
           sound.playSpecial();
-          const joinedId = pendingJoinMatchId;
           onClearPendingJoin();
-          onEnterMatch(joinedId);
+          onEnterMatch(matchId);
         } else {
           setDeepLinkError(t('onlineMagicInvalid'));
           onClearPendingJoin();
         }
       } catch {
         if (mountedRef.current) {
-          setDeepLinkError(t('onlineMagicInvalid'));
-          onClearPendingJoin();
+          setDeepLinkError(t('onlineLobbyError'));
+          setDeepLinkRetryable(true);
         }
       } finally {
         if (mountedRef.current) setJoiningDeepLink(false);
       }
-    })();
-  }, [onClearPendingJoin, onEnterMatch, pendingJoinMatchId, profile, t]);
+    },
+    [onClearPendingJoin, onEnterMatch, t]
+  );
+
+  useEffect(() => {
+    if (!pendingJoinMatchId || !profile) return;
+    if (attemptedJoinRef.current === pendingJoinMatchId) return;
+    attemptedJoinRef.current = pendingJoinMatchId;
+    void attemptMagicLinkJoin(pendingJoinMatchId, profile);
+  }, [attemptMagicLinkJoin, pendingJoinMatchId, profile]);
 
   const handleSaveNickname = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -457,8 +462,23 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
       await navigator.clipboard.writeText(magicUrl);
       setCopiedLink(true);
       window.setTimeout(() => setCopiedLink(false), 2200);
+      return;
     } catch {
-      // Fallback
+      // Fallback for restricted clipboard contexts
+    }
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = magicUrl;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      setCopiedLink(true);
+      window.setTimeout(() => setCopiedLink(false), 2200);
+    } catch {
+      // Ignore if copy is completely blocked
     }
   };
 
@@ -650,8 +670,17 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
 
       {/* Deep Link / Lobby Errors & Notices */}
       {(deepLinkError || lobbyError) && (
-        <div className="mt-2.5 rounded-2xl border-2 border-rose-500 bg-rose-950/90 px-3 py-2 text-center text-xs font-bold text-rose-200 shadow">
-          {deepLinkError || lobbyError}
+        <div className="mt-2.5 flex flex-col items-center gap-2 rounded-2xl border-2 border-rose-500 bg-rose-950/90 px-3 py-2 text-center text-xs font-bold text-rose-200 shadow">
+          <span>{deepLinkError || lobbyError}</span>
+          {deepLinkRetryable && pendingJoinMatchId && profile && (
+            <button
+              type="button"
+              onClick={() => void attemptMagicLinkJoin(pendingJoinMatchId, profile)}
+              className="rounded-xl border border-rose-300 bg-rose-500 px-3 py-1 text-[11px] font-extrabold text-white shadow hover:brightness-105"
+            >
+              {t('onlineRetryJoin')}
+            </button>
+          )}
         </div>
       )}
       {joinNotice && (
@@ -671,8 +700,14 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
             </p>
           </div>
         ) : !profile || editingNickname ? (
-          /* Device Mini-Account + Optional Lichess OAuth */
+          /* Device Account + Optional Lichess OAuth */
           <div className="my-auto rounded-3xl border-4 border-slate-950 bg-slate-900/95 p-5 shadow-2xl backdrop-blur-md">
+            {pendingJoinMatchId && !editingNickname && (
+              <div className="mb-3.5 flex items-center gap-2 rounded-2xl border-2 border-emerald-400/70 bg-emerald-950/50 px-3 py-2 text-xs font-bold text-emerald-200">
+                <Link2 className="h-4 w-4 shrink-0 text-emerald-300" />
+                <span>{t('onlineMagicInviteBanner')}</span>
+              </div>
+            )}
             <div className="text-center">
               <div className="mx-auto mb-2.5 flex h-12 w-12 items-center justify-center rounded-2xl border-3 border-slate-950 bg-amber-400 text-slate-950 shadow">
                 <UserPlus className="h-6 w-6" />

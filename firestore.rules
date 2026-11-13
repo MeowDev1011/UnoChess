@@ -307,11 +307,9 @@ service cloud.firestore {
             && incoming().guestUid != existing().hostUid
             && incoming().status == 'active'
             && incoming().p2Uid == incoming().guestUid
-            && isValidTimestamp(incoming().joinedAt)
-            && incoming().joinedAt == request.time
             && incoming().diff(existing()).affectedKeys().hasOnly([
               'status', 'guestUid', 'guestNickname', 'guestElo',
-              'p2Uid', 'joinedAt', 'updatedAt'
+              'p2Uid', 'updatedAt'
             ])
           )
           ||

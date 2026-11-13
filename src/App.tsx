@@ -539,6 +539,30 @@ export default function App() {
     }
   }, []);
 
+  const handleClearPendingJoin = useCallback(() => {
+    setPendingJoinMatchId(null);
+    if (typeof window !== 'undefined' && window.location.search.includes('join=')) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('join');
+      window.history.replaceState({}, '', url.pathname + url.search);
+    }
+  }, []);
+
+  const handleProfileSaved = useCallback((prof: PlayerProfile) => {
+    setMyProfile(prof);
+  }, []);
+
+  const handleSwitchAccount = useCallback(() => {
+    clearDeviceAccountLocally();
+    setMyProfile(null);
+  }, []);
+
+  const handleLobbyBack = useCallback(() => {
+    setShowOnlineLobby(false);
+    setPhase('TITLE_MENU');
+  }, []);
+
+
   // Elapsed timer
   useEffect(() => {
     if (
@@ -2878,24 +2902,11 @@ export default function App() {
             profile={myProfile}
             profileLoading={profileLoading}
             pendingJoinMatchId={pendingJoinMatchId}
-            onClearPendingJoin={() => {
-              setPendingJoinMatchId(null);
-              if (typeof window !== 'undefined' && window.location.search.includes('join=')) {
-                const url = new URL(window.location.href);
-                url.searchParams.delete('join');
-                window.history.replaceState({}, '', url.pathname + url.search);
-              }
-            }}
-            onProfileSaved={(prof) => setMyProfile(prof)}
-            onSwitchAccount={() => {
-              clearDeviceAccountLocally();
-              setMyProfile(null);
-            }}
+            onClearPendingJoin={handleClearPendingJoin}
+            onProfileSaved={handleProfileSaved}
+            onSwitchAccount={handleSwitchAccount}
             onEnterMatch={handleEnterOnlineMatch}
-            onBack={() => {
-              setShowOnlineLobby(false);
-              setPhase('TITLE_MENU');
-            }}
+            onBack={handleLobbyBack}
           />
         ) : phase === 'TITLE_MENU' ? (
           <StartScreen

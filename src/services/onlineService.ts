@@ -854,7 +854,6 @@ export async function joinMagicLinkMatch(
       guestNickname: guest.nickname,
       guestElo: Math.round(guestCatElo),
       p2Uid: guest.uid,
-      joinedAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
     return 'joined';
