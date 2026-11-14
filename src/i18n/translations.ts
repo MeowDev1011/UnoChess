@@ -370,6 +370,12 @@ export interface TranslationDict {
   modAppealSubmitForUser: string;
   modAppealReplySaved: string;
   appealsModeratorReply: string;
+  modErrCannotDemoteFounder: string;
+  modErrCannotDemotePermMod: string;
+  modErrCannotSanctionFounder: string;
+  modErrCannotSanctionPermMod: string;
+  modPermModBadge: string;
+  modLichessTag: string;
 }
 
 const es: TranslationDict = {
@@ -742,6 +748,12 @@ const es: TranslationDict = {
   modAppealSubmitForUser: 'Enviar Apelación del Usuario',
   modAppealReplySaved: 'Respuesta guardada correctamente.',
   appealsModeratorReply: 'Respuesta de moderación ({{mod}})',
+  modErrCannotDemoteFounder: 'No se puede quitar el rol al Fundador.',
+  modErrCannotDemotePermMod: 'La cuenta de Lichess GatoChess89 es moderador permanente y no puede ser degradada.',
+  modErrCannotSanctionFounder: 'No se puede sancionar ni renombrar al Fundador.',
+  modErrCannotSanctionPermMod: 'Solo el Fundador puede suspender o banear a un moderador permanente.',
+  modPermModBadge: 'Mod Permanente',
+  modLichessTag: 'Lichess · @{{user}}',
 };
 
 const en: TranslationDict = {
@@ -1114,6 +1126,12 @@ const en: TranslationDict = {
   modAppealSubmitForUser: 'Submit Appeal for User',
   modAppealReplySaved: 'Response saved.',
   appealsModeratorReply: 'Moderation reply ({{mod}})',
+  modErrCannotDemoteFounder: 'Cannot remove role from the Founder.',
+  modErrCannotDemotePermMod: 'Lichess account GatoChess89 is a permanent moderator and cannot be demoted.',
+  modErrCannotSanctionFounder: 'Cannot sanction or force-rename the Founder.',
+  modErrCannotSanctionPermMod: 'Only the Founder can suspend or ban a permanent moderator.',
+  modPermModBadge: 'Permanent Mod',
+  modLichessTag: 'Lichess · @{{user}}',
 };
 
 // Helper to create localized overrides concisely while preserving 100% key coverage

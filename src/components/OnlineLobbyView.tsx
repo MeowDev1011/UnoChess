@@ -180,7 +180,7 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
           synced.authType === 'lichess'
             ? await refreshLichessProfileIfLinked(synced)
             : synced;
-        if (active && mountedRef.current) {
+        if (active && mountedRef.current && JSON.stringify(latest) !== JSON.stringify(profile)) {
           onProfileSaved(latest);
         }
       } catch {
@@ -1463,7 +1463,11 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
                                           profile,
                                           ch.id,
                                           ch.creatorNickname
-                                        );
+                                        ).catch(() => {
+                                          if (mountedRef.current) {
+                                            setLobbyError(t('modActionError'));
+                                          }
+                                        });
                                       }}
                                       className="flex min-h-[36px] w-9 items-center justify-center rounded-xl border-2 border-slate-950 bg-rose-900/90 text-rose-200 hover:bg-rose-700"
                                     >

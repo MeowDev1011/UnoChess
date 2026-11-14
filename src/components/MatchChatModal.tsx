@@ -19,12 +19,15 @@ import {
 import {
   isModerator,
   isPlayerChatMuted,
+  isPlayerSuspended,
   lookupPlayerByUsername,
   moderateDeleteChatMessage,
   muteUserChat,
   sendMatchChatMessage,
 } from '../services/moderationChatService';
 import { sound } from '../utils/audio';
+
+const lastChatSentByMatch = new Map<string, number>();
 
 interface MatchChatModalProps {
   isOpen: boolean;
@@ -56,12 +59,12 @@ export const MatchChatModal: React.FC<MatchChatModalProps> = ({
   const [slowCooldownLeft, setSlowCooldownLeft] = useState(0);
   const [busyMsgId, setBusyMsgId] = useState<string | null>(null);
   const listEndRef = useRef<HTMLDivElement | null>(null);
-  const lastSentAtRef = useRef<number>(0);
 
   const wordFilterEnabled = systemConfig?.wordFilterEnabled ?? true;
   const chatDisabledGlobally = Boolean(systemConfig?.chatDisabledGlobally) && !isModerator(profile);
   const slowModeSec = isModerator(profile) ? 0 : systemConfig?.globalSlowModeSec ?? 0;
-  const muted = isPlayerChatMuted(profile) || Boolean(profile?.banned);
+  const muted =
+    isPlayerChatMuted(profile) || isPlayerSuspended(profile) || Boolean(profile?.banned);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -69,14 +72,25 @@ export const MatchChatModal: React.FC<MatchChatModalProps> = ({
   }, [isOpen, messages.length]);
 
   useEffect(() => {
-    if (slowCooldownLeft <= 0) return;
+    if (!isOpen || !matchId || slowModeSec <= 0) {
+      setSlowCooldownLeft(0);
+      return;
+    }
+    const lastSent = lastChatSentByMatch.get(matchId) ?? 0;
+    const elapsed = Math.floor((Date.now() - lastSent) / 1000);
+    setSlowCooldownLeft(Math.max(0, slowModeSec - elapsed));
+  }, [isOpen, matchId, slowModeSec]);
+
+  useEffect(() => {
+    if (slowCooldownLeft <= 0 || !matchId || slowModeSec <= 0) return;
     const id = window.setInterval(() => {
-      const elapsed = Math.floor((Date.now() - lastSentAtRef.current) / 1000);
+      const lastSent = lastChatSentByMatch.get(matchId) ?? 0;
+      const elapsed = Math.floor((Date.now() - lastSent) / 1000);
       const left = Math.max(0, slowModeSec - elapsed);
       setSlowCooldownLeft(left);
     }, 250);
     return () => clearInterval(id);
-  }, [slowCooldownLeft, slowModeSec]);
+  }, [matchId, slowCooldownLeft, slowModeSec]);
 
   if (!isOpen || !matchId) return null;
 
@@ -96,12 +110,15 @@ export const MatchChatModal: React.FC<MatchChatModalProps> = ({
     setErrorMsg('');
     try {
       await sendMatchChatMessage(matchId, profile, trimmed, { wordFilterEnabled });
-      lastSentAtRef.current = Date.now();
+      lastChatSentByMatch.set(matchId, Date.now());
       if (slowModeSec > 0) setSlowCooldownLeft(slowModeSec);
       setDraft('');
     } catch (err) {
-      if (err instanceof Error && err.message === 'PLAYER_MUTED') {
+      const code = err instanceof Error ? err.message : '';
+      if (code === 'PLAYER_MUTED') {
         setErrorMsg(t('chatMutedNotice'));
+      } else if (code === 'PLAYER_SUSPENDED' || code === 'PLAYER_BANNED') {
+        setErrorMsg(t('onlineSanctionBlocked'));
       } else {
         setErrorMsg(t('onlineConnectionLost'));
       }

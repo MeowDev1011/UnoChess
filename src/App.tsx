@@ -165,6 +165,7 @@ export default function App() {
   myProfileRef.current = myProfile;
   const lastSeenDuelTextRef = useRef<string>('');
   const gameSessionRef = useRef<number>(0);
+  const timeoutClaimedMatchRef = useRef<string | null>(null);
 
   // Core game state machine
   const [phase, setPhase] = useState<GamePhase>('TITLE_MENU');
@@ -679,6 +680,9 @@ export default function App() {
         match.pendingWildPieceType ? (match.pendingWildPieceType as PieceType) : null
       );
       setPendingPromotion(match.pendingPromotion ?? null);
+      if (match.phase === 'PROMOTION_CHOICE') {
+        setPromotionSavedMovesAfter(match.movesRemaining || 0);
+      }
       setLastChainColor(match.lastChainColor ?? '');
       setLastChainBy(match.lastChainBy ?? '');
       setIsFirstMoveOfTurn(
@@ -874,6 +878,7 @@ export default function App() {
     lastSeenDuelTextRef.current = '';
     lastSnapshotSigRef.current = '';
     matchVersionRef.current = 1;
+    timeoutClaimedMatchRef.current = null;
     if (myProfileRef.current?.uid) {
       saveActiveOnlineMatchId(myProfileRef.current.uid, matchId);
     }
@@ -949,6 +954,7 @@ export default function App() {
       timeControl.minutes <= 0 ||
       showOnlineLobby ||
       (isPaused && mode !== 'online') ||
+      (mode === 'online' && onlineMatch?.status !== 'active') ||
       phase === 'TITLE_MENU' ||
       phase === 'GAME_OVER' ||
       phase === 'REVERSING' ||
@@ -972,7 +978,7 @@ export default function App() {
     }, 100);
 
     return () => clearInterval(id);
-  }, [activePlayer, isPaused, mode, phase, showOnlineLobby, timeControl.minutes]);
+  }, [activePlayer, isPaused, mode, onlineMatch?.status, phase, showOnlineLobby, timeControl.minutes]);
 
   // Detect clock flag / timeout victory
   useEffect(() => {
@@ -993,8 +999,9 @@ export default function App() {
         const winnerElo = winnerPid === 'p1' ? onlineMatch.hostElo : onlineMatch.guestElo;
         const loserElo = winnerPid === 'p1' ? onlineMatch.guestElo : onlineMatch.hostElo;
         const delta = calculateEloDelta(winnerElo, loserElo);
-        // Let the flagged player commit timeout cleanly
-        if (myProfile.uid === playerUidForId(activePlayer)) {
+        const commitTimeout = () => {
+          if (timeoutClaimedMatchRef.current === onlineMatch.id) return;
+          timeoutClaimedMatchRef.current = onlineMatch.id;
           pushOnline({
             status: 'finished',
             phase: 'GAME_OVER',
@@ -1004,8 +1011,20 @@ export default function App() {
             p1TimeMs: Math.round(p1TimeMs),
             p2TimeMs: Math.round(p2TimeMs),
           });
+        };
+
+        // Flagged player commits immediately; opponent acts as 1500ms fallback if flagged player disconnected
+        if (myProfile.uid === playerUidForId(activePlayer)) {
+          commitTimeout();
+          return;
         }
-        return;
+        const matchIdSnap = onlineMatch.id;
+        const fallbackTid = window.setTimeout(() => {
+          const latest = onlineMatchRef.current;
+          if (!latest || latest.id !== matchIdSnap || latest.status !== 'active') return;
+          commitTimeout();
+        }, 1500);
+        return () => clearTimeout(fallbackTid);
       }
 
       sound.playCheckmate();
@@ -2216,7 +2235,8 @@ export default function App() {
         setEnPassantTarget(nextEnPassant);
         setSelectedCoord(null);
         setPendingPromotion(promoData);
-        setPromotionSavedMovesAfter(movesRemaining - 1 + syncBonusMoves);
+        const promoMovesAfter = Math.max(0, movesRemaining - 1 + syncBonusMoves);
+        setPromotionSavedMovesAfter(promoMovesAfter);
         setPhase('PROMOTION_CHOICE');
 
         if (mode === 'online') {
@@ -2226,6 +2246,7 @@ export default function App() {
             capturedBlackPieces: nextCapB,
             enPassantTarget: nextEnPassant,
             pendingPromotion: promoData,
+            movesRemaining: promoMovesAfter,
             phase: 'PROMOTION_CHOICE',
             bannerKey: 'promoTitle',
             bannerParams: {},
@@ -2452,6 +2473,7 @@ export default function App() {
 
   const handleSelectPromotion = (type: PieceType) => {
     if (!pendingPromotion) return;
+    if (mode === 'online' && !isHumanTurn) return;
     sound.playSpecial();
     const nextBoard = cloneBoard(board);
     const piece = nextBoard[pendingPromotion.coord.row][pendingPromotion.coord.col];
@@ -2807,6 +2829,7 @@ export default function App() {
               boardFlat: flattenBoard(nextBoard),
               wildTeleportPending: false,
               pendingPromotion: promoData,
+              movesRemaining: 0,
               phase: 'PROMOTION_CHOICE',
               bannerKey: 'promoTitle',
               bannerParams: {},
@@ -3059,6 +3082,7 @@ export default function App() {
 
   const handleSelectWildColor = useCallback(
     (color: CardColor) => {
+      if (mode === 'online' && !isHumanTurn) return;
       sound.playSpecial();
       const updatedCard = currentCard ? { ...currentCard, color } : null;
       if (updatedCard) {
@@ -3099,11 +3123,12 @@ export default function App() {
         }
       }
     },
-    [activeFaction, board, currentCard, mode, pieceLabel, pushOnline, t]
+    [activeFaction, board, currentCard, isHumanTurn, mode, pieceLabel, pushOnline, t]
   );
 
   const handleSelectPlus4Mode = useCallback(
     (selectedMode: 'attack' | 'action') => {
+      if (mode === 'online' && !isHumanTurn) return;
       sound.playSpecial();
       if (selectedMode === 'attack') {
         const nonKingCount = board
@@ -3155,7 +3180,7 @@ export default function App() {
         }
       }
     },
-    [board, enemyFaction, mode, pushOnline, skipOpponentTurns, t]
+    [board, enemyFaction, isHumanTurn, mode, pushOnline, skipOpponentTurns, t]
   );
 
   const handleOnlineResign = useCallback(() => {

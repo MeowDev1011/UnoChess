@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Ban,
@@ -42,6 +42,7 @@ import {
   clearUserWarnings,
   demoteModeratorByUsername,
   forceRenameUser,
+  isGuaranteedPermanentModerator,
   isModerator,
   issueUserWarning,
   lookupPlayerByUsername,
@@ -91,6 +92,15 @@ export const ModerationConsoleModal: React.FC<ModerationConsoleModalProps> = ({
   const [busyAction, setBusyAction] = useState(false);
   const [toastMsg, setToastMsg] = useState('');
   const [errMsg, setErrMsg] = useState('');
+  const toastTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
 
   // Live queues & logs
   const [reports, setReports] = useState<ModerationReport[]>([]);
@@ -170,7 +180,13 @@ export const ModerationConsoleModal: React.FC<ModerationConsoleModalProps> = ({
   const showToast = (msg: string) => {
     setErrMsg('');
     setToastMsg(msg);
-    window.setTimeout(() => setToastMsg(''), 3000);
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => {
+      setToastMsg('');
+      toastTimerRef.current = null;
+    }, 3000);
   };
 
   const handleSelectUser = (u: PlayerProfile) => {
@@ -214,8 +230,17 @@ export const ModerationConsoleModal: React.FC<ModerationConsoleModalProps> = ({
       sound.playSpecial();
       showToast(t('modActionSuccess'));
     } catch (err) {
-      if (err instanceof Error && err.message === 'USER_NOT_FOUND') {
+      const code = err instanceof Error ? err.message : '';
+      if (code === 'USER_NOT_FOUND') {
         setErrMsg(t('modUserNotFound'));
+      } else if (code === 'CANNOT_DEMOTE_FOUNDER') {
+        setErrMsg(t('modErrCannotDemoteFounder'));
+      } else if (code === 'CANNOT_DEMOTE_PERMANENT_MOD') {
+        setErrMsg(t('modErrCannotDemotePermMod'));
+      } else if (code === 'CANNOT_SANCTION_FOUNDER') {
+        setErrMsg(t('modErrCannotSanctionFounder'));
+      } else if (code === 'CANNOT_SANCTION_PERM_MOD') {
+        setErrMsg(t('modErrCannotSanctionPermMod'));
       } else {
         setErrMsg(t('modActionError'));
       }
@@ -225,15 +250,34 @@ export const ModerationConsoleModal: React.FC<ModerationConsoleModalProps> = ({
   };
 
   const handlePromoteInput = async () => {
-    const q = (targetUser?.nickname || searchQuery).trim();
+    const q = (targetUser?.uid || searchQuery).trim();
     if (!q) return;
     await runUserAction(() => promoteModeratorByUsername(actor, q));
   };
 
   const handleDemoteInput = async () => {
-    const q = (targetUser?.nickname || searchQuery).trim();
+    const q = (targetUser?.uid || searchQuery).trim();
     if (!q) return;
     await runUserAction(() => demoteModeratorByUsername(actor, q));
+  };
+
+  const handleReportStatus = async (
+    reportId: string,
+    status: 'in_review' | 'resolved' | 'dismissed'
+  ) => {
+    if (busyAction) return;
+    sound.playClick();
+    setBusyAction(true);
+    setErrMsg('');
+    try {
+      await updateReportStatus(actor, reportId, status, modNoteInput);
+      sound.playSpecial();
+      showToast(t('modActionSuccess'));
+    } catch {
+      setErrMsg(t('modActionError'));
+    } finally {
+      setBusyAction(false);
+    }
   };
 
   const handleCreateAppealForUser = async (e: React.FormEvent) => {
@@ -478,26 +522,38 @@ export const ModerationConsoleModal: React.FC<ModerationConsoleModalProps> = ({
               </div>
 
               {/* Direct Promote / Demote by Username */}
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  disabled={busyAction || !(targetUser?.nickname || searchQuery.trim())}
-                  onClick={() => void handlePromoteInput()}
-                  className="flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl border border-sky-500/60 bg-sky-950/70 px-2 text-xs font-extrabold text-sky-200 transition hover:bg-sky-900/70 disabled:opacity-40"
-                >
-                  <UserCheck className="h-3.5 w-3.5" />
-                  <span className="truncate">{t('modPromoteModBtn')}</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={busyAction || !(targetUser?.nickname || searchQuery.trim())}
-                  onClick={() => void handleDemoteInput()}
-                  className="flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-2 text-xs font-extrabold text-slate-200 transition hover:bg-slate-700 disabled:opacity-40"
-                >
-                  <UserMinus className="h-3.5 w-3.5" />
-                  <span className="truncate">{t('modDemoteModBtn')}</span>
-                </button>
-              </div>
+              {(() => {
+                const isProtectedModTarget = Boolean(
+                  targetUser &&
+                    (targetUser.role === 'founder' || isGuaranteedPermanentModerator(targetUser))
+                );
+                return (
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      disabled={busyAction || !(targetUser?.uid || searchQuery.trim())}
+                      onClick={() => void handlePromoteInput()}
+                      className="flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl border border-sky-500/60 bg-sky-950/70 px-2 text-xs font-extrabold text-sky-200 transition hover:bg-sky-900/70 disabled:opacity-40"
+                    >
+                      <UserCheck className="h-3.5 w-3.5" />
+                      <span className="truncate">{t('modPromoteModBtn')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={
+                        busyAction ||
+                        !(targetUser?.uid || searchQuery.trim()) ||
+                        isProtectedModTarget
+                      }
+                      onClick={() => void handleDemoteInput()}
+                      className="flex min-h-[38px] items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 px-2 text-xs font-extrabold text-slate-200 transition hover:bg-slate-700 disabled:opacity-40"
+                    >
+                      <UserMinus className="h-3.5 w-3.5" />
+                      <span className="truncate">{t('modDemoteModBtn')}</span>
+                    </button>
+                  </div>
+                );
+              })()}
 
               {/* Real Registered Users Directory (Zero fake data; honest empty state) */}
               <div className="space-y-1.5 rounded-2xl border border-slate-800 bg-slate-950/55 p-2.5">
@@ -525,11 +581,21 @@ export const ModerationConsoleModal: React.FC<ModerationConsoleModalProps> = ({
                               : 'border-slate-800 bg-slate-900/80 hover:border-slate-600'
                           }`}
                         >
-                          <div className="flex min-w-0 items-center gap-1.5">
+                          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                             <span className="truncate font-extrabold text-white">
                               {u.nickname}
                             </span>
                             {roleBadge(u.role)}
+                            {isGuaranteedPermanentModerator(u) && (
+                              <span className="rounded bg-amber-400/20 px-1.5 py-0.2 text-[9px] font-extrabold text-amber-300">
+                                {t('modPermModBadge')}
+                              </span>
+                            )}
+                            {u.authType === 'lichess' && u.lichessUsername && (
+                              <span className="rounded bg-slate-800 px-1.5 py-0.2 text-[9px] font-bold text-slate-300">
+                                {t('modLichessTag', { user: u.lichessUsername })}
+                              </span>
+                            )}
                             {u.banned && (
                               <span className="rounded bg-rose-500 px-1 py-0.2 text-[9px] font-extrabold text-white">
                                 BAN
@@ -551,11 +617,21 @@ export const ModerationConsoleModal: React.FC<ModerationConsoleModalProps> = ({
                   {/* Target User Header */}
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <span className="text-sm font-extrabold text-white">
                           {targetUser.nickname}
                         </span>
                         {roleBadge(targetUser.role)}
+                        {isGuaranteedPermanentModerator(targetUser) && (
+                          <span className="rounded-md bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-extrabold text-amber-300">
+                            {t('modPermModBadge')}
+                          </span>
+                        )}
+                        {targetUser.authType === 'lichess' && targetUser.lichessUsername && (
+                          <span className="rounded-md bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold text-slate-300">
+                            {t('modLichessTag', { user: targetUser.lichessUsername })}
+                          </span>
+                        )}
                       </div>
                       <div className="mt-1 flex flex-wrap gap-2 text-[11px] font-bold text-slate-400 tabular-nums">
                         <span>Elo: {targetUser.elo}</span>
@@ -812,22 +888,25 @@ export const ModerationConsoleModal: React.FC<ModerationConsoleModalProps> = ({
                       )}
                       <button
                         type="button"
-                        onClick={() => void updateReportStatus(actor, rep.id, 'in_review', modNoteInput)}
-                        className="rounded-lg border border-sky-500/50 bg-sky-950/60 px-2 py-1 text-[10px] font-extrabold text-sky-200"
+                        disabled={busyAction}
+                        onClick={() => void handleReportStatus(rep.id, 'in_review')}
+                        className="rounded-lg border border-sky-500/50 bg-sky-950/60 px-2 py-1 text-[10px] font-extrabold text-sky-200 disabled:opacity-50"
                       >
                         {t('modReportInReview')}
                       </button>
                       <button
                         type="button"
-                        onClick={() => void updateReportStatus(actor, rep.id, 'resolved', modNoteInput)}
-                        className="rounded-lg border border-emerald-500/50 bg-emerald-950/60 px-2 py-1 text-[10px] font-extrabold text-emerald-200"
+                        disabled={busyAction}
+                        onClick={() => void handleReportStatus(rep.id, 'resolved')}
+                        className="rounded-lg border border-emerald-500/50 bg-emerald-950/60 px-2 py-1 text-[10px] font-extrabold text-emerald-200 disabled:opacity-50"
                       >
                         {t('modReportResolve')}
                       </button>
                       <button
                         type="button"
-                        onClick={() => void updateReportStatus(actor, rep.id, 'dismissed', modNoteInput)}
-                        className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-extrabold text-slate-300"
+                        disabled={busyAction}
+                        onClick={() => void handleReportStatus(rep.id, 'dismissed')}
+                        className="rounded-lg border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-extrabold text-slate-300 disabled:opacity-50"
                       >
                         {t('modReportDismiss')}
                       </button>

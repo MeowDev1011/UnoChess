@@ -54,7 +54,7 @@ const SESSION_MAX_AGE_MS = 6 * 60 * 60 * 1000; // 6 hours
 // Boot-time connection check
 async function testConnection() {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
+    await getDocFromServer(doc(db, 'system', 'moderation'));
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
       console.error('Online service connection check: client is offline.');
@@ -127,6 +127,37 @@ function normalizeLichessElos(raw: unknown): LichessTimeControlElos {
   };
 }
 
+export function isGuaranteedPermanentModerator(
+  profile:
+    | {
+        uid?: string | null;
+        authType?: string | null;
+        lichessUsername?: string | null;
+      }
+    | null
+    | undefined
+): boolean {
+  if (!profile) return false;
+  const uid = String(profile.uid ?? '').trim().toLowerCase();
+  const authType = String(profile.authType ?? '').trim().toLowerCase();
+  const liUser = String(profile.lichessUsername ?? '').trim().toLowerCase();
+  return uid === 'lichess_gatochess89' || (authType === 'lichess' && liUser === 'gatochess89');
+}
+
+export function resolveEffectiveRole(
+  rawRole: unknown,
+  identity: {
+    uid?: string | null;
+    authType?: string | null;
+    lichessUsername?: string | null;
+  }
+): UserRole {
+  if (rawRole === 'founder') return 'founder';
+  if (isGuaranteedPermanentModerator(identity)) return 'moderator';
+  if (rawRole === 'moderator') return 'moderator';
+  return 'user';
+}
+
 export function loadDeviceAccount(): PlayerProfile | null {
   try {
     const raw = localStorage.getItem(DEVICE_ACCOUNT_KEY);
@@ -134,19 +165,21 @@ export function loadDeviceAccount(): PlayerProfile | null {
     const d = JSON.parse(raw) as Partial<PlayerProfile>;
     if (!d.uid || !d.nickname) return null;
     const baseElo = Number(d.elo ?? 1200);
+    const uid = String(d.uid);
+    const authType: 'device' | 'lichess' = d.authType === 'lichess' ? 'lichess' : 'device';
+    const lichessUsername = String(d.lichessUsername ?? '');
     return {
-      uid: String(d.uid),
+      uid,
       nickname: String(d.nickname).slice(0, 20),
       elo: clampElo(baseElo),
       wins: Number(d.wins ?? 0),
       losses: Number(d.losses ?? 0),
-      authType: d.authType === 'lichess' ? 'lichess' : 'device',
-      lichessUsername: String(d.lichessUsername ?? ''),
+      authType,
+      lichessUsername,
       lichessElo: Number(d.lichessElo ?? 0),
       elos: normalizeElos(d.elos, baseElo),
       lichessElos: normalizeLichessElos(d.lichessElos),
-      role:
-        d.role === 'founder' || d.role === 'moderator' ? d.role : 'user',
+      role: resolveEffectiveRole(d.role, { uid, authType, lichessUsername }),
       banned: Boolean(d.banned),
       suspendedUntilMs: Number(d.suspendedUntilMs ?? 0),
       chatMuted: Boolean(d.chatMuted),
@@ -367,8 +400,35 @@ export function assertCanPlayOnline(profile: PlayerProfile): void {
 export async function syncUsernameIndex(uid: string, nickname: string): Promise<void> {
   const key = normalizeUsernameKey(nickname);
   if (key.length < 2 || !uid) return;
+  if (key === 'gatochess89' && uid.toLowerCase() !== 'lichess_gatochess89') {
+    return;
+  }
   try {
-    await setDoc(doc(db, 'usernames', key), {
+    const indexRef = doc(db, 'usernames', key);
+    const existingSnap = await getDoc(indexRef);
+    if (existingSnap.exists()) {
+      const existingUid = String(existingSnap.data().uid || '');
+      if (existingUid && existingUid !== uid) {
+        const ownerSnap = await getDoc(doc(db, 'players', existingUid));
+        if (ownerSnap.exists()) {
+          const owner = ownerSnap.data() as Record<string, unknown>;
+          const ownerKey = normalizeUsernameKey(String(owner.nickname || ''));
+          const ownerProtected =
+            owner.authType === 'lichess' ||
+            owner.role === 'founder' ||
+            owner.role === 'moderator' ||
+            isGuaranteedPermanentModerator({
+              uid: existingUid,
+              authType: String(owner.authType ?? ''),
+              lichessUsername: String(owner.lichessUsername ?? ''),
+            });
+          if (ownerProtected && ownerKey === key) {
+            return;
+          }
+        }
+      }
+    }
+    await setDoc(indexRef, {
       usernameKey: key,
       uid,
       nickname: nickname.trim().slice(0, 20),
@@ -377,6 +437,31 @@ export async function syncUsernameIndex(uid: string, nickname: string): Promise<
   } catch {
     // Non-blocking secondary index update
   }
+}
+
+export async function ensureGuaranteedModerator(
+  profile: PlayerProfile
+): Promise<PlayerProfile> {
+  if (!isGuaranteedPermanentModerator(profile)) return profile;
+  if (profile.role === 'founder') return profile;
+  const targetRef = doc(db, 'players', profile.uid);
+  try {
+    const snap = await getDoc(targetRef);
+    if (snap.exists()) {
+      const rawRole = snap.data().role;
+      if (rawRole !== 'moderator' && rawRole !== 'founder') {
+        await updateDoc(targetRef, {
+          role: 'moderator',
+          updatedAt: serverTimestamp(),
+        });
+      }
+    }
+  } catch {
+    // keep effective moderator role locally even if offline temporarily
+  }
+  const enforced: PlayerProfile = { ...profile, role: 'moderator' };
+  saveDeviceAccountLocally(enforced);
+  return enforced;
 }
 
 export async function ensureFounderIfUnclaimed(
@@ -413,32 +498,33 @@ export async function ensureFounderIfUnclaimed(
         });
         return 'founder';
       }
-      return profile.role || 'user';
+      return resolveEffectiveRole(profile.role, profile);
     });
     if (claimedRole !== profile.role) {
       const next = { ...profile, role: claimedRole };
       saveDeviceAccountLocally(next);
       return next;
     }
-    return profile;
+    return await ensureGuaranteedModerator(profile);
   } catch {
-    return profile;
+    return await ensureGuaranteedModerator(profile);
   }
 }
 
 export function mapDocToProfile(d: Record<string, unknown>): PlayerProfile {
   const baseElo = Number(d.elo ?? 1200);
-  const rawRole = d.role;
-  const role: UserRole =
-    rawRole === 'founder' || rawRole === 'moderator' ? rawRole : 'user';
+  const uid = String(d.uid);
+  const authType: 'device' | 'lichess' = d.authType === 'lichess' ? 'lichess' : 'device';
+  const lichessUsername = String(d.lichessUsername ?? '');
+  const role = resolveEffectiveRole(d.role, { uid, authType, lichessUsername });
   return {
-    uid: String(d.uid),
+    uid,
     nickname: String(d.nickname).slice(0, 20),
     elo: clampElo(baseElo),
     wins: Number(d.wins ?? 0),
     losses: Number(d.losses ?? 0),
-    authType: d.authType === 'lichess' ? 'lichess' : 'device',
-    lichessUsername: String(d.lichessUsername ?? ''),
+    authType,
+    lichessUsername,
     lichessElo: Number(d.lichessElo ?? 0),
     elos: normalizeElos(d.elos, baseElo),
     lichessElos: normalizeLichessElos(d.lichessElos),
@@ -520,10 +606,23 @@ export async function refreshLichessProfileIfLinked(
   if (!queryName) return profile;
 
   const fresh = await fetchLatestLichessProfile(queryName);
-  if (!fresh) return profile;
+  if (!fresh) return await ensureGuaranteedModerator(profile);
 
   const merged = mergeFreshLichessElos(profile, fresh);
-  if (!merged.changed) return profile;
+  const guaranteedMod = isGuaranteedPermanentModerator({
+    uid: profile.uid,
+    authType: 'lichess',
+    lichessUsername: fresh.username,
+  });
+  const nextRole: UserRole =
+    profile.role === 'founder'
+      ? 'founder'
+      : guaranteedMod
+      ? 'moderator'
+      : profile.role || 'user';
+  const roleChanged = nextRole !== profile.role;
+
+  if (!merged.changed && !roleChanged) return profile;
 
   const updated: PlayerProfile = {
     ...profile,
@@ -533,10 +632,11 @@ export async function refreshLichessProfileIfLinked(
     lichessUsername: fresh.username.slice(0, 40),
     lichessElo: merged.lichessElo,
     lichessElos: merged.lichessElos,
+    role: nextRole,
   };
 
   try {
-    await updateDoc(doc(db, 'players', profile.uid), {
+    const patch: Record<string, unknown> = {
       nickname: updated.nickname,
       elo: updated.elo,
       elos: updated.elos,
@@ -545,7 +645,11 @@ export async function refreshLichessProfileIfLinked(
       lichessElo: updated.lichessElo,
       lichessElos: updated.lichessElos,
       updatedAt: serverTimestamp(),
-    });
+    };
+    if (guaranteedMod && nextRole === 'moderator') {
+      patch.role = 'moderator';
+    }
+    await updateDoc(doc(db, 'players', profile.uid), patch);
   } catch {
     // keep local updated ratings if offline
   }
@@ -563,9 +667,23 @@ export async function syncDeviceAccountWithFirestore(
     const snap = await getDoc(ref);
     let synced: PlayerProfile;
     if (snap.exists()) {
-      synced = mapDocToProfile(snap.data() as Record<string, unknown>);
+      const raw = snap.data() as Record<string, unknown>;
+      synced = mapDocToProfile(raw);
+      if (
+        isGuaranteedPermanentModerator(synced) &&
+        raw.role !== 'moderator' &&
+        raw.role !== 'founder'
+      ) {
+        await updateDoc(ref, {
+          role: 'moderator',
+          updatedAt: serverTimestamp(),
+        }).catch(() => {});
+      }
       saveDeviceAccountLocally(synced);
     } else {
+      const initialRole: UserRole = isGuaranteedPermanentModerator(localProfile)
+        ? 'moderator'
+        : 'user';
       await setDoc(ref, {
         uid: localProfile.uid,
         nickname: localProfile.nickname.slice(0, 20),
@@ -582,7 +700,7 @@ export async function syncDeviceAccountWithFirestore(
           rapid: 0,
           classical: 0,
         },
-        role: 'user',
+        role: initialRole,
         banned: false,
         suspendedUntilMs: 0,
         chatMuted: false,
@@ -592,12 +710,13 @@ export async function syncDeviceAccountWithFirestore(
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-      synced = { ...localProfile, role: 'user' };
+      synced = { ...localProfile, role: initialRole };
       saveDeviceAccountLocally(synced);
     }
 
     await syncUsernameIndex(synced.uid, synced.nickname);
     synced = await ensureFounderIfUnclaimed(synced);
+    synced = await ensureGuaranteedModerator(synced);
 
     if (synced.authType === 'lichess') {
       synced = await refreshLichessProfileIfLinked(synced);
@@ -607,6 +726,8 @@ export async function syncDeviceAccountWithFirestore(
     handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
+
+const selfHealedModUids = new Set<string>();
 
 export function subscribePlayerProfile(
   uid: string,
@@ -621,7 +742,22 @@ export function subscribePlayerProfile(
         cb(null);
         return;
       }
-      const prof = mapDocToProfile(snap.data() as Record<string, unknown>);
+      const raw = snap.data() as Record<string, unknown>;
+      const prof = mapDocToProfile(raw);
+      if (
+        isGuaranteedPermanentModerator(prof) &&
+        raw.role !== 'moderator' &&
+        raw.role !== 'founder' &&
+        !selfHealedModUids.has(uid)
+      ) {
+        selfHealedModUids.add(uid);
+        void updateDoc(doc(db, 'players', uid), {
+          role: 'moderator',
+          updatedAt: serverTimestamp(),
+        }).catch(() => {
+          selfHealedModUids.delete(uid);
+        });
+      }
       saveDeviceAccountLocally(prof);
       cb(prof);
     },
@@ -702,6 +838,11 @@ export async function loginWithLichessProfile(
   const ref = doc(db, 'players', uid);
   const nickname = lichess.username.trim().slice(0, 20);
   const clampedElo = clampElo(lichess.elo || 1200);
+  const guaranteedMod = isGuaranteedPermanentModerator({
+    uid,
+    authType: 'lichess',
+    lichessUsername: lichess.username,
+  });
 
   try {
     const existing = await getDoc(ref);
@@ -717,7 +858,7 @@ export async function loginWithLichessProfile(
         lichessElo: clampedElo,
         elos: lichess.elos,
         lichessElos: lichess.lichessElos,
-        role: 'user',
+        role: guaranteedMod ? 'moderator' : 'user',
         banned: false,
         suspendedUntilMs: 0,
         chatMuted: false,
@@ -732,12 +873,14 @@ export async function loginWithLichessProfile(
       });
       await syncUsernameIndex(uid, profile.nickname);
       profile = await ensureFounderIfUnclaimed(profile);
+      profile = await ensureGuaranteedModerator(profile);
       saveDeviceAccountLocally(profile);
       return profile;
     } else {
-      const current = mapDocToProfile(existing.data() as Record<string, unknown>);
+      const raw = existing.data() as Record<string, unknown>;
+      const current = mapDocToProfile(raw);
       const merged = mergeFreshLichessElos(current, lichess);
-      await updateDoc(ref, {
+      const patch: Record<string, unknown> = {
         nickname: merged.nickname,
         elo: merged.elo,
         elos: merged.elos,
@@ -746,9 +889,13 @@ export async function loginWithLichessProfile(
         lichessElo: merged.lichessElo,
         lichessElos: merged.lichessElos,
         updatedAt: serverTimestamp(),
-      });
+      };
+      if (guaranteedMod && raw.role !== 'founder' && raw.role !== 'moderator') {
+        patch.role = 'moderator';
+      }
+      await updateDoc(ref, patch);
       await syncUsernameIndex(uid, merged.nickname);
-      const updated = await ensureFounderIfUnclaimed({
+      let updated = await ensureFounderIfUnclaimed({
         ...current,
         nickname: merged.nickname,
         elo: merged.elo,
@@ -757,7 +904,14 @@ export async function loginWithLichessProfile(
         lichessUsername: lichess.username.slice(0, 40),
         lichessElo: merged.lichessElo,
         lichessElos: merged.lichessElos,
+        role:
+          current.role === 'founder'
+            ? 'founder'
+            : guaranteedMod
+            ? 'moderator'
+            : current.role,
       });
+      updated = await ensureGuaranteedModerator(updated);
       saveDeviceAccountLocally(updated);
       return updated;
     }
@@ -773,33 +927,49 @@ export async function applyMatchEloToMyProfile(
   category: TimeControlCategory = 'blitz'
 ): Promise<void> {
   const path = `players/${profile.uid}`;
-  const currentCatElo = getProfileEloForCategory(profile, category);
-  const updatedCatElo = clampElo(currentCatElo + (won ? eloDelta : -eloDelta));
-  const nextElos: TimeControlElos = {
-    ...(profile.elos ?? buildDefaultElos(profile.elo)),
-    [category]: updatedCatElo,
-  };
-  const newElo = clampElo(profile.elo + (won ? eloDelta : -eloDelta));
-  const newWins = profile.wins + (won ? 1 : 0);
-  const newLosses = profile.losses + (won ? 0 : 1);
+  const ref = doc(db, 'players', profile.uid);
   try {
-    await updateDoc(doc(db, 'players', profile.uid), {
-      elo: newElo,
-      elos: nextElos,
-      wins: newWins,
-      losses: newLosses,
-      updatedAt: serverTimestamp(),
+    const updatedLocal = await runTransaction(db, async (tx): Promise<PlayerProfile> => {
+      const snap = await tx.get(ref);
+      const latest = snap.exists()
+        ? mapDocToProfile(snap.data() as Record<string, unknown>)
+        : profile;
+      const currentCatElo = getProfileEloForCategory(latest, category);
+      const updatedCatElo = clampElo(currentCatElo + (won ? eloDelta : -eloDelta));
+      const nextElos: TimeControlElos = {
+        ...(latest.elos ?? buildDefaultElos(latest.elo)),
+        [category]: updatedCatElo,
+      };
+      const newElo = clampElo(latest.elo + (won ? eloDelta : -eloDelta));
+      const newWins = latest.wins + (won ? 1 : 0);
+      const newLosses = latest.losses + (won ? 0 : 1);
+      tx.update(ref, {
+        elo: newElo,
+        elos: nextElos,
+        wins: newWins,
+        losses: newLosses,
+        updatedAt: serverTimestamp(),
+      });
+      return {
+        ...latest,
+        elo: newElo,
+        elos: nextElos,
+        wins: newWins,
+        losses: newLosses,
+      };
     });
-    saveDeviceAccountLocally({
-      ...profile,
-      elo: newElo,
-      elos: nextElos,
-      wins: newWins,
-      losses: newLosses,
-    });
+    saveDeviceAccountLocally(updatedLocal);
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
+}
+
+const STALE_CHALLENGE_MS = 2 * 60 * 60 * 1000;
+
+function isStaleChallengeDoc(d: Record<string, unknown>): boolean {
+  const ts = d.createdAt as { toMillis?: () => number } | null | undefined;
+  if (!ts || typeof ts.toMillis !== 'function') return false;
+  return Date.now() - ts.toMillis() > STALE_CHALLENGE_MS;
 }
 
 function mapDocToChallenge(d: Record<string, unknown>): LobbyChallenge {
@@ -838,7 +1008,10 @@ export async function getOpenChallengesFromServer(): Promise<LobbyChallenge[]> {
     const snap = await getDocsFromServer(q);
     const list: LobbyChallenge[] = [];
     snap.forEach((docSnap) => {
-      list.push(mapDocToChallenge(docSnap.data() as Record<string, unknown>));
+      const data = docSnap.data() as Record<string, unknown>;
+      if (!isStaleChallengeDoc(data)) {
+        list.push(mapDocToChallenge(data));
+      }
     });
     list.sort((a, b) => b.id.localeCompare(a.id));
     return list;
@@ -858,7 +1031,10 @@ export function subscribeOpenChallenges(
     (snap) => {
       const list: LobbyChallenge[] = [];
       snap.forEach((docSnap) => {
-        list.push(mapDocToChallenge(docSnap.data() as Record<string, unknown>));
+        const data = docSnap.data() as Record<string, unknown>;
+        if (!isStaleChallengeDoc(data)) {
+          list.push(mapDocToChallenge(data));
+        }
       });
       list.sort((a, b) => b.id.localeCompare(a.id));
       cb(list);
@@ -942,6 +1118,24 @@ export async function createLobbyChallenge(
   const path = `challenges/${id}`;
   const categoryElo = clampElo(getProfileEloForCategory(profile, timeControl.category));
   try {
+    // Clean up any leftover open challenges created by the same player
+    try {
+      const oldSnap = await getDocsFromServer(
+        query(
+          collection(db, 'challenges'),
+          where('creatorUid', '==', profile.uid),
+          where('status', '==', 'open')
+        )
+      );
+      await Promise.all(
+        oldSnap.docs.map((d) =>
+          updateDoc(d.ref, { status: 'cancelled', updatedAt: serverTimestamp() }).catch(() => {})
+        )
+      );
+    } catch {
+      // Non-fatal cleanup of prior open challenges
+    }
+
     await withTransientRetry(() =>
       setDoc(doc(db, 'challenges', id), {
         id,

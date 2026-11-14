@@ -34,13 +34,20 @@ import {
   db,
   generateSafeId,
   handleFirestoreError,
+  isGuaranteedPermanentModerator,
   mapDocToProfile,
   normalizeUsernameKey,
   syncUsernameIndex,
 } from './onlineService';
 
+export { isGuaranteedPermanentModerator };
+
 export function isModerator(profile: PlayerProfile | null | undefined): boolean {
-  return profile?.role === 'founder' || profile?.role === 'moderator';
+  return (
+    profile?.role === 'founder' ||
+    profile?.role === 'moderator' ||
+    isGuaranteedPermanentModerator(profile)
+  );
 }
 
 export function isFounder(profile: PlayerProfile | null | undefined): boolean {
@@ -314,6 +321,7 @@ export async function sendMatchChatMessage(
   options?: { wordFilterEnabled?: boolean; kind?: 'text' | 'system' }
 ): Promise<string> {
   if (sender.banned) throw new Error('PLAYER_BANNED');
+  if (isPlayerSuspended(sender)) throw new Error('PLAYER_SUSPENDED');
   if (isPlayerChatMuted(sender)) throw new Error('PLAYER_MUTED');
 
   const text = sanitizeChatText(rawText, options?.wordFilterEnabled ?? true);
@@ -750,8 +758,31 @@ export async function lookupPlayerByUsername(
   const trimmed = usernameOrUid.trim();
   if (!trimmed) return null;
 
-  // 1) Try normalized username index first
+  // 1) Direct UID lookup first so UID selections from the directory are unambiguous
+  if (/^[a-zA-Z0-9_\-]+$/.test(trimmed)) {
+    try {
+      const pSnap = await getDocFromServer(doc(db, 'players', trimmed));
+      if (pSnap.exists()) {
+        return mapDocToProfile(pSnap.data() as Record<string, unknown>);
+      }
+    } catch {
+      // continue to username index
+    }
+  }
+
+  // 2) Normalized username lookup (with guaranteed priority for Lichess GatoChess89)
   const key = normalizeUsernameKey(trimmed);
+  if (key === 'gatochess89') {
+    try {
+      const liSnap = await getDocFromServer(doc(db, 'players', 'lichess_gatochess89'));
+      if (liSnap.exists()) {
+        return mapDocToProfile(liSnap.data() as Record<string, unknown>);
+      }
+    } catch {
+      // continue to username index
+    }
+  }
+
   if (key.length >= 2) {
     try {
       const uSnap = await getDocFromServer(doc(db, 'usernames', key));
@@ -765,30 +796,31 @@ export async function lookupPlayerByUsername(
         }
       }
     } catch {
-      // continue to direct UID check
+      // continue to lichess fallback
+    }
+
+    // 3) Fallback: try lichess_<key> directly if not yet in usernames index
+    if (/^[a-z0-9_\-]+$/.test(key)) {
+      try {
+        const liFallback = await getDocFromServer(doc(db, 'players', `lichess_${key}`));
+        if (liFallback.exists()) {
+          return mapDocToProfile(liFallback.data() as Record<string, unknown>);
+        }
+      } catch {
+        // ignore
+      }
     }
   }
 
-  // 2) Fallback: direct UID lookup
-  if (/^[a-zA-Z0-9_\-]+$/.test(trimmed)) {
-    try {
-      const pSnap = await getDoc(doc(db, 'players', trimmed));
-      if (pSnap.exists()) {
-        return mapDocToProfile(pSnap.data() as Record<string, unknown>);
-      }
-    } catch {
-      return null;
-    }
-  }
   return null;
 }
 
 export async function promoteModeratorByUsername(
   actor: PlayerProfile,
-  targetUsername: string
+  targetUsernameOrUid: string
 ): Promise<PlayerProfile> {
   if (!isModerator(actor)) throw new Error('NOT_MODERATOR');
-  const target = await lookupPlayerByUsername(targetUsername);
+  const target = await lookupPlayerByUsername(targetUsernameOrUid);
   if (!target) throw new Error('USER_NOT_FOUND');
   if (target.role === 'founder') return target;
 
@@ -813,12 +845,15 @@ export async function promoteModeratorByUsername(
 
 export async function demoteModeratorByUsername(
   actor: PlayerProfile,
-  targetUsername: string
+  targetUsernameOrUid: string
 ): Promise<PlayerProfile> {
   if (!isModerator(actor)) throw new Error('NOT_MODERATOR');
-  const target = await lookupPlayerByUsername(targetUsername);
+  const target = await lookupPlayerByUsername(targetUsernameOrUid);
   if (!target) throw new Error('USER_NOT_FOUND');
   if (target.role === 'founder') throw new Error('CANNOT_DEMOTE_FOUNDER');
+  if (isGuaranteedPermanentModerator(target)) {
+    throw new Error('CANNOT_DEMOTE_PERMANENT_MOD');
+  }
 
   const path = `players/${target.uid}`;
   try {
@@ -961,6 +996,9 @@ export async function suspendUserTemp(
 ): Promise<PlayerProfile> {
   if (!isModerator(actor)) throw new Error('NOT_MODERATOR');
   if (target.role === 'founder') throw new Error('CANNOT_SANCTION_FOUNDER');
+  if (isGuaranteedPermanentModerator(target) && actor.role !== 'founder' && actor.uid !== target.uid) {
+    throw new Error('CANNOT_SANCTION_PERM_MOD');
+  }
   const suspendedUntilMs = Date.now() + hours * 3600 * 1000;
   const safeReason = reason.trim().slice(0, 200) || `Suspended for ${hours}h`;
   const path = `players/${target.uid}`;
@@ -990,6 +1028,9 @@ export async function banUserAccount(
 ): Promise<PlayerProfile> {
   if (!isModerator(actor)) throw new Error('NOT_MODERATOR');
   if (target.role === 'founder') throw new Error('CANNOT_SANCTION_FOUNDER');
+  if (isGuaranteedPermanentModerator(target) && actor.role !== 'founder' && actor.uid !== target.uid) {
+    throw new Error('CANNOT_SANCTION_PERM_MOD');
+  }
   const safeReason = reason.trim().slice(0, 200) || 'Account banned by moderator';
   const path = `players/${target.uid}`;
   try {
