@@ -210,6 +210,7 @@ export interface TranslationDict {
   onlineLobbyError: string;
   onlineMagicSelfLink: string;
   onlineMagicRestored: string;
+  onlineMagicAlreadyStarted: string;
   onlineChallengeTaken: string;
   onlineConnectionLost: string;
   moveHistoryTitle: string;
@@ -261,6 +262,114 @@ export interface TranslationDict {
   outcomeWin: string;
   outcomeLoss: string;
   outcomeDraw: string;
+  chatBtn: string;
+  chatTitle: string;
+  chatEmpty: string;
+  chatPlaceholder: string;
+  chatSend: string;
+  chatMutedNotice: string;
+  chatDisabledNotice: string;
+  chatQuickGoodMove: string;
+  chatQuickGoodLuck: string;
+  chatQuickThanks: string;
+  chatQuickRematch: string;
+  chatModeratedLabel: string;
+  chatDeleteMsgBtn: string;
+  chatSlowModeHint: string;
+  chatReportMsgBtn: string;
+  reportBtn: string;
+  reportTitle: string;
+  reportCategoryLabel: string;
+  reportCatBehavior: string;
+  reportCatChat: string;
+  reportCatBug: string;
+  reportTargetLabel: string;
+  reportTargetPlaceholder: string;
+  reportDescPlaceholder: string;
+  reportSubmitBtn: string;
+  reportSuccess: string;
+  reportErrorShort: string;
+  reportNeedAccount: string;
+  appealsBtn: string;
+  appealsTitle: string;
+  appealsDesc: string;
+  appealsSanctionType: string;
+  appealsTypeBan: string;
+  appealsTypeSuspension: string;
+  appealsTypeMute: string;
+  appealsTypeWarning: string;
+  appealsTypeOther: string;
+  appealsReasonPlaceholder: string;
+  appealsSubmitBtn: string;
+  appealsSubmitted: string;
+  appealsMyList: string;
+  appealsEmpty: string;
+  appealStatusPending: string;
+  appealStatusApproved: string;
+  appealStatusRejected: string;
+  appealSanctionBannerBanned: string;
+  appealSanctionBannerSuspended: string;
+  appealSanctionBannerMuted: string;
+  appealSanctionBannerWarned: string;
+  modConsoleBtn: string;
+  modConsoleTitle: string;
+  modRoleFounder: string;
+  modRoleModerator: string;
+  modRoleUser: string;
+  modTabUsers: string;
+  modTabReports: string;
+  modTabAppeals: string;
+  modTabSystem: string;
+  modTabLogs: string;
+  modSearchPlaceholder: string;
+  modSearchBtn: string;
+  modUserNotFound: string;
+  modPromoteModBtn: string;
+  modDemoteModBtn: string;
+  modReasonPlaceholder: string;
+  modActionWarn: string;
+  modActionClearWarn: string;
+  modActionMute15: string;
+  modActionMute24h: string;
+  modActionMutePerm: string;
+  modActionUnmute: string;
+  modActionSuspend24h: string;
+  modActionBan: string;
+  modActionPardon: string;
+  modActionEloPlus: string;
+  modActionEloMinus: string;
+  modActionResetStats: string;
+  modActionForceRename: string;
+  modActionDeleteChallenge: string;
+  modSystemSlowMode: string;
+  modSystemWordFilter: string;
+  modSystemDisableChat: string;
+  modSystemBannerLabel: string;
+  modSystemSaveBtn: string;
+  modActionSuccess: string;
+  modActionError: string;
+  modReportsEmpty: string;
+  modReportInReview: string;
+  modReportResolve: string;
+  modReportDismiss: string;
+  modAppealApprove: string;
+  modAppealReject: string;
+  modLogsEmpty: string;
+  onlineSanctionBlocked: string;
+  yourTurnBadge: string;
+  activeTurnBadge: string;
+  turnOfLabel: string;
+  modUsersListTitle: string;
+  modNoUsersFound: string;
+  modNoOtherUsers: string;
+  modReplyPlaceholder: string;
+  modRespondUpdateBtn: string;
+  modAppealForUserBtn: string;
+  modAppealForUserTitle: string;
+  modAppealReasonPlaceholder: string;
+  modAppealSubmitForUser: string;
+  modAppealReplySaved: string;
+  appealsModeratorReply: string;
 }
 
 const es: TranslationDict = {
@@ -473,6 +582,7 @@ const es: TranslationDict = {
   onlineLobbyError: 'No se pudo completar la acción. El desafío ya no está disponible o hubo un error de red.',
   onlineMagicSelfLink: 'Este enlace pertenece a tu propia cuenta. Compártelo con tu amigo en otro dispositivo o navegador (o cambia de cuenta si quieres probar en este mismo navegador).',
   onlineMagicRestored: 'Enlace mágico activo recuperado · Esperando a tu amigo...',
+  onlineMagicAlreadyStarted: 'Esta partida ya comenzó con otro jugador.',
   onlineChallengeTaken: 'Este desafío ya fue aceptado o cancelado. Elige otro de la lista.',
   onlineConnectionLost: 'Sincronizando conexión en tiempo real...',
   moveHistoryTitle: 'Historial',
@@ -524,6 +634,114 @@ const es: TranslationDict = {
   outcomeWin: 'Victoria',
   outcomeLoss: 'Derrota',
   outcomeDraw: 'Tablas',
+  chatBtn: 'Chat',
+  chatTitle: 'Chat de la Partida',
+  chatEmpty: 'Envía un saludo o mensaje a tu oponente.',
+  chatPlaceholder: 'Escribe un mensaje...',
+  chatSend: 'Enviar',
+  chatMutedNotice: 'Estás silenciado en el chat. Puedes enviar una apelación.',
+  chatDisabledNotice: 'El chat global está desactivado temporalmente por moderación.',
+  chatQuickGoodMove: '¡Buena jugada!',
+  chatQuickGoodLuck: '¡Buena suerte!',
+  chatQuickThanks: '¡Gracias!',
+  chatQuickRematch: '¿Revancha?',
+  chatModeratedLabel: '[Mensaje eliminado por moderación]',
+  chatDeleteMsgBtn: 'Eliminar',
+  chatSlowModeHint: 'Modo lento activo ({{sec}}s)',
+  chatReportMsgBtn: 'Reportar mensaje',
+  reportBtn: 'Reportar',
+  reportTitle: 'Enviar Reporte',
+  reportCategoryLabel: 'Tipo de reporte',
+  reportCatBehavior: 'Comportamiento',
+  reportCatChat: 'Chat / Abuso',
+  reportCatBug: 'Error / Bug',
+  reportTargetLabel: 'Usuario afectado (opcional)',
+  reportTargetPlaceholder: 'Nombre de usuario...',
+  reportDescPlaceholder: 'Describe lo sucedido o los pasos para reproducir el bug (mín. 5 caracteres)...',
+  reportSubmitBtn: 'Enviar Reporte',
+  reportSuccess: '¡Reporte enviado! Nuestro equipo de moderación lo revisará.',
+  reportErrorShort: 'Describe el reporte con al menos 5 caracteres.',
+  reportNeedAccount: 'Crea tu usuario en En Línea para asociar reportes y apelaciones.',
+  appealsBtn: 'Apelar',
+  appealsTitle: 'Apelaciones de Usuarios',
+  appealsDesc: 'Si recibiste una advertencia, silencio, suspensión o baneo, explica tu caso para que un moderador lo revise.',
+  appealsSanctionType: 'Sanción a apelar',
+  appealsTypeBan: 'Baneo de cuenta',
+  appealsTypeSuspension: 'Suspensión temporal',
+  appealsTypeMute: 'Silencio en chat',
+  appealsTypeWarning: 'Advertencia',
+  appealsTypeOther: 'Otra medida',
+  appealsReasonPlaceholder: 'Explica por qué debería revisarse o levantarse la sanción...',
+  appealsSubmitBtn: 'Enviar Apelación',
+  appealsSubmitted: '¡Apelación enviada! Puedes seguir su estado aquí abajo.',
+  appealsMyList: 'Mis Apelaciones',
+  appealsEmpty: 'No has enviado apelaciones todavía.',
+  appealStatusPending: 'Pendiente',
+  appealStatusApproved: 'Aprobada',
+  appealStatusRejected: 'Rechazada',
+  appealSanctionBannerBanned: 'Cuenta baneada: {{reason}}',
+  appealSanctionBannerSuspended: 'Cuenta suspendida temporalmente: {{reason}}',
+  appealSanctionBannerMuted: 'Chat silenciado: {{reason}}',
+  appealSanctionBannerWarned: 'Tienes {{count}} advertencia(s): {{reason}}',
+  modConsoleBtn: 'Moderación',
+  modConsoleTitle: 'Consola de Moderación',
+  modRoleFounder: 'Fundador · Mod Principal',
+  modRoleModerator: 'Moderador',
+  modRoleUser: 'Usuario',
+  modTabUsers: 'Usuarios y Sanciones',
+  modTabReports: 'Reportes',
+  modTabAppeals: 'Apelaciones',
+  modTabSystem: 'Sistema Chat',
+  modTabLogs: 'Registro',
+  modSearchPlaceholder: 'Escribe el nombre de usuario...',
+  modSearchBtn: 'Buscar',
+  modUserNotFound: 'No se encontró ningún usuario con ese nombre.',
+  modPromoteModBtn: 'Hacer Moderador',
+  modDemoteModBtn: 'Quitar Moderador',
+  modReasonPlaceholder: 'Motivo de la acción (opcional)...',
+  modActionWarn: 'Advertir (+1)',
+  modActionClearWarn: 'Limpiar Advertencias',
+  modActionMute15: 'Silenciar 15m',
+  modActionMute24h: 'Silenciar 24h',
+  modActionMutePerm: 'Silencio Permanente',
+  modActionUnmute: 'Quitar Silencio',
+  modActionSuspend24h: 'Suspender 24h',
+  modActionBan: 'Banear Cuenta',
+  modActionPardon: 'Levantar Sanción',
+  modActionEloPlus: 'Elo +25',
+  modActionEloMinus: 'Elo -25',
+  modActionResetStats: 'Reiniciar Stats',
+  modActionForceRename: 'Forzar Renombre',
+  modActionDeleteChallenge: 'Retirar Reto',
+  modSystemSlowMode: 'Modo lento global (segundos entre mensajes)',
+  modSystemWordFilter: 'Filtro automático de palabras ofensivas',
+  modSystemDisableChat: 'Desactivar chat en línea globalmente',
+  modSystemBannerLabel: 'Aviso global de moderación',
+  modSystemSaveBtn: 'Guardar Configuración',
+  modActionSuccess: 'Acción aplicada correctamente.',
+  modActionError: 'No se pudo completar la acción.',
+  modReportsEmpty: 'No hay reportes registrados.',
+  modReportInReview: 'En revisión',
+  modReportResolve: 'Resolver',
+  modReportDismiss: 'Descartar',
+  modAppealApprove: 'Aprobar y Perdonar',
+  modAppealReject: 'Rechazar',
+  modLogsEmpty: 'No hay acciones de moderación registradas.',
+  onlineSanctionBlocked: 'Tu cuenta tiene una sanción activa y no puede iniciar partidas en línea.',
+  yourTurnBadge: 'Tu turno',
+  activeTurnBadge: 'Turno',
+  turnOfLabel: 'Turno: {{name}}',
+  modUsersListTitle: 'Usuarios registrados ({{count}})',
+  modNoUsersFound: 'No hay usuarios registrados todavía.',
+  modNoOtherUsers: 'No hay otros usuarios reales registrados.',
+  modReplyPlaceholder: 'Escribe una respuesta clara para esta apelación...',
+  modRespondUpdateBtn: 'Responder',
+  modAppealForUserBtn: 'Apelar Usuario',
+  modAppealForUserTitle: 'Abrir apelación para otro usuario',
+  modAppealReasonPlaceholder: 'Motivo de la apelación o revisión para este usuario...',
+  modAppealSubmitForUser: 'Enviar Apelación del Usuario',
+  modAppealReplySaved: 'Respuesta guardada correctamente.',
+  appealsModeratorReply: 'Respuesta de moderación ({{mod}})',
 };
 
 const en: TranslationDict = {
@@ -736,6 +954,7 @@ const en: TranslationDict = {
   onlineLobbyError: 'Action could not be completed. The challenge may no longer be available.',
   onlineMagicSelfLink: 'This link belongs to your own account. Share it with your friend on another device or browser (or switch account to test with a second player).',
   onlineMagicRestored: 'Active magic link restored · Waiting for your friend...',
+  onlineMagicAlreadyStarted: 'This match has already started with another player.',
   onlineChallengeTaken: 'This challenge was already accepted or cancelled. Pick another from the list.',
   onlineConnectionLost: 'Syncing live match connection...',
   moveHistoryTitle: 'History',
@@ -787,6 +1006,114 @@ const en: TranslationDict = {
   outcomeWin: 'Win',
   outcomeLoss: 'Loss',
   outcomeDraw: 'Draw',
+  chatBtn: 'Chat',
+  chatTitle: 'Match Chat',
+  chatEmpty: 'Say hello or chat with your opponent.',
+  chatPlaceholder: 'Type a message...',
+  chatSend: 'Send',
+  chatMutedNotice: 'You are muted in chat. You may submit an appeal.',
+  chatDisabledNotice: 'Match chat is temporarily disabled by moderation.',
+  chatQuickGoodMove: 'Nice move!',
+  chatQuickGoodLuck: 'Good luck!',
+  chatQuickThanks: 'Thanks!',
+  chatQuickRematch: 'Rematch?',
+  chatModeratedLabel: '[Message removed by moderator]',
+  chatDeleteMsgBtn: 'Delete',
+  chatSlowModeHint: 'Slow mode active ({{sec}}s)',
+  chatReportMsgBtn: 'Report message',
+  reportBtn: 'Report',
+  reportTitle: 'Submit Report',
+  reportCategoryLabel: 'Report Category',
+  reportCatBehavior: 'Behavior',
+  reportCatChat: 'Chat / Abuse',
+  reportCatBug: 'Bug / Error',
+  reportTargetLabel: 'Reported User (optional)',
+  reportTargetPlaceholder: 'Username...',
+  reportDescPlaceholder: 'Describe what happened or steps to reproduce the bug (min. 5 chars)...',
+  reportSubmitBtn: 'Submit Report',
+  reportSuccess: 'Report submitted! Moderation will review it.',
+  reportErrorShort: 'Please describe the issue using at least 5 characters.',
+  reportNeedAccount: 'Create an account in Online mode first to track reports & appeals.',
+  appealsBtn: 'Appeal',
+  appealsTitle: 'User Appeals',
+  appealsDesc: 'If you received a warning, mute, suspension, or ban, explain your case for moderator review.',
+  appealsSanctionType: 'Sanction to appeal',
+  appealsTypeBan: 'Account ban',
+  appealsTypeSuspension: 'Temporary suspension',
+  appealsTypeMute: 'Chat mute',
+  appealsTypeWarning: 'Warning',
+  appealsTypeOther: 'Other action',
+  appealsReasonPlaceholder: 'Explain why this sanction should be reviewed or lifted...',
+  appealsSubmitBtn: 'Submit Appeal',
+  appealsSubmitted: 'Appeal submitted! Track its status below.',
+  appealsMyList: 'My Appeals',
+  appealsEmpty: 'No appeals submitted yet.',
+  appealStatusPending: 'Pending',
+  appealStatusApproved: 'Approved',
+  appealStatusRejected: 'Rejected',
+  appealSanctionBannerBanned: 'Account banned: {{reason}}',
+  appealSanctionBannerSuspended: 'Account temporarily suspended: {{reason}}',
+  appealSanctionBannerMuted: 'Chat muted: {{reason}}',
+  appealSanctionBannerWarned: 'You have {{count}} warning(s): {{reason}}',
+  modConsoleBtn: 'Moderation',
+  modConsoleTitle: 'Moderation Console',
+  modRoleFounder: 'Founder · Head Mod',
+  modRoleModerator: 'Moderator',
+  modRoleUser: 'User',
+  modTabUsers: 'Users & Actions',
+  modTabReports: 'Reports',
+  modTabAppeals: 'Appeals',
+  modTabSystem: 'Chat Safety',
+  modTabLogs: 'Audit Log',
+  modSearchPlaceholder: 'Enter username...',
+  modSearchBtn: 'Search',
+  modUserNotFound: 'No user found with that username.',
+  modPromoteModBtn: 'Make Moderator',
+  modDemoteModBtn: 'Remove Moderator',
+  modReasonPlaceholder: 'Reason for action (optional)...',
+  modActionWarn: 'Warn (+1)',
+  modActionClearWarn: 'Clear Warnings',
+  modActionMute15: 'Mute 15m',
+  modActionMute24h: 'Mute 24h',
+  modActionMutePerm: 'Permanent Mute',
+  modActionUnmute: 'Unmute Chat',
+  modActionSuspend24h: 'Suspend 24h',
+  modActionBan: 'Ban Account',
+  modActionPardon: 'Lift Sanction',
+  modActionEloPlus: 'Elo +25',
+  modActionEloMinus: 'Elo -25',
+  modActionResetStats: 'Reset Stats',
+  modActionForceRename: 'Force Rename',
+  modActionDeleteChallenge: 'Remove Challenge',
+  modSystemSlowMode: 'Global slow mode (seconds between messages)',
+  modSystemWordFilter: 'Automatic profanity word filter',
+  modSystemDisableChat: 'Disable online chat globally',
+  modSystemBannerLabel: 'Global moderation banner',
+  modSystemSaveBtn: 'Save Settings',
+  modActionSuccess: 'Moderation action applied.',
+  modActionError: 'Could not complete moderation action.',
+  modReportsEmpty: 'No reports yet.',
+  modReportInReview: 'In Review',
+  modReportResolve: 'Resolve',
+  modReportDismiss: 'Dismiss',
+  modAppealApprove: 'Approve & Pardon',
+  modAppealReject: 'Reject',
+  modLogsEmpty: 'No moderation actions logged yet.',
+  onlineSanctionBlocked: 'Your account has an active sanction and cannot start online matches.',
+  yourTurnBadge: 'Your turn',
+  activeTurnBadge: 'Turn',
+  turnOfLabel: 'Turn: {{name}}',
+  modUsersListTitle: 'Registered users ({{count}})',
+  modNoUsersFound: 'No registered users yet.',
+  modNoOtherUsers: 'No other real users registered.',
+  modReplyPlaceholder: 'Write a clear response to this appeal...',
+  modRespondUpdateBtn: 'Reply',
+  modAppealForUserBtn: 'Appeal User',
+  modAppealForUserTitle: 'Submit appeal for another user',
+  modAppealReasonPlaceholder: 'Reason for appealing or reviewing this user...',
+  modAppealSubmitForUser: 'Submit Appeal for User',
+  modAppealReplySaved: 'Response saved.',
+  appealsModeratorReply: 'Moderation reply ({{mod}})',
 };
 
 // Helper to create localized overrides concisely while preserving 100% key coverage

@@ -88,6 +88,83 @@ export function deserializeBoardCompact(str: string): (ChessPiece | null)[][] {
   return board;
 }
 
+export function deriveReplayBoardWithStableIds(pathNodes: ReplayNode[]): (ChessPiece | null)[][] {
+  if (pathNodes.length === 0) return createInitialBoard();
+  let board =
+    pathNodes[0].boardStr && pathNodes[0].boardStr.length === 128
+      ? createInitialBoard()
+      : createInitialBoard();
+
+  for (let i = 1; i < pathNodes.length; i++) {
+    const node = pathNodes[i];
+    const target = deserializeBoardCompact(node.boardStr);
+    const next: (ChessPiece | null)[][] = Array.from({ length: 8 }, () =>
+      Array<ChessPiece | null>(8).fill(null)
+    );
+    const usedIds = new Set<string>();
+
+    // 1) Preserve IDs of pieces that stayed on the exact same square with same faction & type
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        const tgt = target[r][c];
+        const prev = board[r][c];
+        if (tgt && prev && prev.faction === tgt.faction && prev.type === tgt.type && !usedIds.has(prev.id)) {
+          next[r][c] = { ...tgt, id: prev.id };
+          usedIds.add(prev.id);
+        }
+      }
+    }
+
+    // 2) Transfer ID along explicit fromSq -> toSq (even on pawn promotion!)
+    const fromC = sqToCoord(node.fromSq);
+    const toC = sqToCoord(node.toSq);
+    if (fromC && toC) {
+      const movedFrom = board[fromC.row][fromC.col];
+      const landed = target[toC.row][toC.col];
+      if (
+        movedFrom &&
+        landed &&
+        !next[toC.row][toC.col] &&
+        movedFrom.faction === landed.faction &&
+        !usedIds.has(movedFrom.id)
+      ) {
+        next[toC.row][toC.col] = { ...landed, id: movedFrom.id };
+        usedIds.add(movedFrom.id);
+      }
+    }
+
+    // 3) Match any remaining pieces (castling rook, teleport, steal) from unused pieces on prev board
+    const unusedPrev: ChessPiece[] = [];
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        const prev = board[r][c];
+        if (prev && !usedIds.has(prev.id)) unusedPrev.push(prev);
+      }
+    }
+
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        const tgt = target[r][c];
+        if (!tgt || next[r][c]) continue;
+        const matchIdx = unusedPrev.findIndex(
+          (p) => p.faction === tgt.faction && p.type === tgt.type
+        );
+        if (matchIdx >= 0) {
+          const [matched] = unusedPrev.splice(matchIdx, 1);
+          next[r][c] = { ...tgt, id: matched.id };
+          usedIds.add(matched.id);
+        } else {
+          next[r][c] = { ...tgt, id: `rep-${node.id}-${r}-${c}` };
+        }
+      }
+    }
+
+    board = next;
+  }
+
+  return board;
+}
+
 export function buildInitialReplayTree(moves: MoveHistoryEntry[]): ReplayNode {
   const initialBoardStr = serializeBoardCompact(createInitialBoard());
   const root: ReplayNode = {

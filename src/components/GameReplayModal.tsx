@@ -33,7 +33,7 @@ import {
   buildInitialReplayTree,
   buildPGNFromReplayTree,
   deleteVariationNode,
-  deserializeBoardCompact,
+  deriveReplayBoardWithStableIds,
   findNodeById,
   findNodePath,
   getActiveBranchNodes,
@@ -138,9 +138,8 @@ export const GameReplayModal: React.FC<GameReplayModalProps> = ({
   }, [activeNode?.id, activeNode?.userComment]);
 
   const currentBoard = useMemo(() => {
-    if (!activeNode) return deserializeBoardCompact('');
-    return deserializeBoardCompact(activeNode.boardStr);
-  }, [activeNode]);
+    return deriveReplayBoardWithStableIds(pathToCurrent);
+  }, [pathToCurrent]);
 
   const defaultAnalysisTurn: Faction = useMemo(() => {
     if (!activeNode || activeNode.id === 'root') return 'white';
@@ -166,14 +165,16 @@ export const GameReplayModal: React.FC<GameReplayModalProps> = ({
     return null;
   }, [currentBoard]);
 
-  const highlightCoords = useMemo(() => {
-    const coords: Coord[] = [];
-    const fromC = sqToCoord(activeNode?.fromSq);
-    const toC = sqToCoord(activeNode?.toSq);
-    if (fromC) coords.push(fromC);
-    if (toC) coords.push(toC);
-    return coords;
+  const lastMove = useMemo(() => {
+    const from = sqToCoord(activeNode?.fromSq);
+    const to = sqToCoord(activeNode?.toSq);
+    if (!from && !to) return null;
+    return { from, to };
   }, [activeNode?.fromSq, activeNode?.toSq]);
+
+  const highlightCoords = useMemo(() => {
+    return [] as Coord[];
+  }, []);
 
   // Auto-playback timer
   useEffect(() => {
@@ -514,6 +515,7 @@ export const GameReplayModal: React.FC<GameReplayModalProps> = ({
           highlightCoords={highlightCoords}
           highlightMode={highlightCoords.length > 0 ? 'select-own' : 'none'}
           checkedFaction={checkedFaction}
+          lastMove={lastMove}
           onSquareClick={handleSquareClick}
         />
 

@@ -2,7 +2,7 @@
   "entities": {
     "PlayerProfile": {
       "title": "PlayerProfile",
-      "description": "Public online player profile linked to user UID with nickname and Elo rating (no PII).",
+      "description": "Public online player profile linked to user UID with nickname, Elo ratings, role, and moderation status (no PII).",
       "type": "object",
       "properties": {
         "uid": {
@@ -44,6 +44,29 @@
           "type": "object",
           "description": "Synced Lichess Elo ratings keyed by bullet, blitz, rapid, classical."
         },
+        "role": {
+          "type": "string",
+          "enum": ["user", "moderator", "founder"]
+        },
+        "banned": {
+          "type": "boolean"
+        },
+        "suspendedUntilMs": {
+          "type": "number"
+        },
+        "chatMuted": {
+          "type": "boolean"
+        },
+        "mutedUntilMs": {
+          "type": "number"
+        },
+        "warningsCount": {
+          "type": "number"
+        },
+        "sanctionReason": {
+          "type": "string",
+          "maxLength": 200
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
@@ -65,6 +88,84 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "SystemModerationConfig": {
+      "title": "SystemModerationConfig",
+      "description": "Platform moderation state tracking the founding first-user moderator and live chat/safety controls.",
+      "type": "object",
+      "properties": {
+        "founderUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "founderNickname": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 20
+        },
+        "globalSlowModeSec": {
+          "type": "number"
+        },
+        "wordFilterEnabled": {
+          "type": "boolean"
+        },
+        "chatDisabledGlobally": {
+          "type": "boolean"
+        },
+        "broadcastBanner": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "founderUid",
+        "founderNickname",
+        "globalSlowModeSec",
+        "wordFilterEnabled",
+        "chatDisabledGlobally",
+        "broadcastBanner",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UsernameLookup": {
+      "title": "UsernameLookup",
+      "description": "Normalized username index mapping lowercase nickname to player UID for moderation and role assignment.",
+      "type": "object",
+      "properties": {
+        "usernameKey": {
+          "type": "string",
+          "pattern": "^[a-z0-9_\\-\\.]{2,20}$",
+          "minLength": 2,
+          "maxLength": 20
+        },
+        "uid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "nickname": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 20
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["usernameKey", "uid", "nickname", "updatedAt"]
     },
     "Challenge": {
       "title": "Challenge",
@@ -388,6 +489,312 @@
         "updatedAt"
       ]
     },
+    "MatchChatMessage": {
+      "title": "MatchChatMessage",
+      "description": "Real-time chat message sent inside an online UnoChess match.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "matchId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "senderUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "senderNickname": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 20
+        },
+        "senderRole": {
+          "type": "string",
+          "enum": ["user", "moderator", "founder"]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["text", "system", "moderated"]
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "deletedBy": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "flagged": {
+          "type": "boolean"
+        },
+        "createdAtMs": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "matchId",
+        "senderUid",
+        "senderNickname",
+        "senderRole",
+        "text",
+        "kind",
+        "deleted",
+        "deletedBy",
+        "flagged",
+        "createdAtMs",
+        "createdAt"
+      ]
+    },
+    "ModerationReport": {
+      "title": "ModerationReport",
+      "description": "User report for inappropriate behavior, abusive chat, or game bugs.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "reporterUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "reporterNickname": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 20
+        },
+        "category": {
+          "type": "string",
+          "enum": ["behavior", "chat", "bug"]
+        },
+        "targetUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "targetNickname": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "matchId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "messageId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "messageExcerpt": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "description": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 500
+        },
+        "status": {
+          "type": "string",
+          "enum": ["open", "in_review", "resolved", "dismissed"]
+        },
+        "resolutionNote": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "handledByUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "handledByNickname": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "createdAtMs": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "reporterUid",
+        "reporterNickname",
+        "category",
+        "targetUid",
+        "targetNickname",
+        "matchId",
+        "messageId",
+        "messageExcerpt",
+        "description",
+        "status",
+        "resolutionNote",
+        "handledByUid",
+        "handledByNickname",
+        "createdAtMs",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ModerationAppeal": {
+      "title": "ModerationAppeal",
+      "description": "User appeal against a mute, warning, suspension, or ban.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "appellantUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "appellantNickname": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 20
+        },
+        "sanctionType": {
+          "type": "string",
+          "enum": ["ban", "suspension", "mute", "warning", "other"]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 500
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected"]
+        },
+        "reviewerUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "reviewerNickname": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "reviewerNote": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "createdAtMs": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "appellantUid",
+        "appellantNickname",
+        "sanctionType",
+        "reason",
+        "status",
+        "reviewerUid",
+        "reviewerNickname",
+        "reviewerNote",
+        "createdAtMs",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ModerationLog": {
+      "title": "ModerationLog",
+      "description": "Immutable audit log entry for every moderation action.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "action": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 64
+        },
+        "actorUid": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "actorNickname": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 20
+        },
+        "targetUid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "targetNickname": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "details": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "createdAtMs": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "action",
+        "actorUid",
+        "actorNickname",
+        "targetUid",
+        "targetNickname",
+        "details",
+        "createdAtMs",
+        "createdAt"
+      ]
+    },
     "MatchHistoryRecord": {
       "title": "MatchHistoryRecord",
       "description": "Completed match record with compact move snapshots, annotations, and variations stored under a player profile.",
@@ -491,9 +898,17 @@
     }
   },
   "firestore": {
+    "/system/{docId}": {
+      "schema": { "$ref": "#/entities/SystemModerationConfig" },
+      "description": "Global moderation configuration including founding moderator identity and chat safety settings."
+    },
+    "/usernames/{usernameKey}": {
+      "schema": { "$ref": "#/entities/UsernameLookup" },
+      "description": "Normalized username index enabling O(1) lookup by nickname for moderation and role management."
+    },
     "/players/{uid}": {
       "schema": { "$ref": "#/entities/PlayerProfile" },
-      "description": "Public player identity (UID + nickname + Elo + W/L record)."
+      "description": "Public player identity (UID + nickname + Elo + W/L record + role & sanction status)."
     },
     "/players/{uid}/matches/{recordId}": {
       "schema": { "$ref": "#/entities/MatchHistoryRecord" },
@@ -506,6 +921,22 @@
     "/matches/{matchId}": {
       "schema": { "$ref": "#/entities/OnlineMatch" },
       "description": "Authoritative real-time state for active online matches and magic invite links."
+    },
+    "/matches/{matchId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/MatchChatMessage" },
+      "description": "Real-time in-match chat messages synchronized between players."
+    },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/ModerationReport" },
+      "description": "Submitted user reports for behavior, chat abuse, and game bugs."
+    },
+    "/appeals/{appealId}": {
+      "schema": { "$ref": "#/entities/ModerationAppeal" },
+      "description": "Submitted user appeals for moderation sanctions."
+    },
+    "/moderationLogs/{logId}": {
+      "schema": { "$ref": "#/entities/ModerationLog" },
+      "description": "Immutable audit trail of moderation actions."
     }
   }
 }

@@ -4,14 +4,23 @@ import {
   Check,
   Clock,
   Copy,
+  Crown,
   Edit3,
   ExternalLink,
+  Flag,
+  Gavel,
   History,
   Link2,
   LogOut,
+  Megaphone,
+  RefreshCw,
   Share2,
+  Shield,
+  ShieldAlert,
+  ShieldCheck,
   Sparkles,
   Swords,
+  Trash2,
   Trophy,
   UserPlus,
   Users,
@@ -22,6 +31,7 @@ import {
   LobbyChallenge,
   PlayerProfile,
   PreferredColor,
+  SystemModerationConfig,
   TIME_CONTROL_PRESETS,
   TimeControlCategory,
   TimeControlPreset,
@@ -35,6 +45,7 @@ import {
   createMagicLinkMatch,
   getChallengeFromServer,
   getMatchFromServer,
+  getOpenChallengesFromServer,
   joinMagicLinkMatch,
   loadPendingChallengeId,
   loadWaitingMagicMatchId,
@@ -49,6 +60,12 @@ import {
   syncDeviceAccountWithFirestore,
 } from '../services/onlineService';
 import {
+  isModerator,
+  isPlayerChatMuted,
+  isPlayerSuspended,
+  moderatorCancelChallenge,
+} from '../services/moderationChatService';
+import {
   createLichessOAuthUrl,
   exchangeLichessCodeForProfile,
   LICHESS_CB_STORAGE_KEY,
@@ -61,11 +78,15 @@ interface OnlineLobbyViewProps {
   profileLoading: boolean;
   pendingJoinMatchId: string | null;
   historyCount?: number;
+  systemConfig?: SystemModerationConfig | null;
   onClearPendingJoin: () => void;
   onProfileSaved: (profile: PlayerProfile) => void;
   onSwitchAccount: () => void;
   onEnterMatch: (matchId: string, joinNotice?: string) => void;
   onOpenHistory: () => void;
+  onOpenReport: () => void;
+  onOpenAppeals: () => void;
+  onOpenModeration: () => void;
   onBack: () => void;
 }
 
@@ -74,11 +95,15 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
   profileLoading,
   pendingJoinMatchId,
   historyCount = 0,
+  systemConfig,
   onClearPendingJoin,
   onProfileSaved,
   onSwitchAccount,
   onEnterMatch,
   onOpenHistory,
+  onOpenReport,
+  onOpenAppeals,
+  onOpenModeration,
   onBack,
 }) => {
   const { t } = useTranslation();
@@ -321,21 +346,56 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
     };
   }, [enterMatchSafely, pendingJoinMatchId, profileUid, t]);
 
-  // Subscribe to real open challenges in public lobby
+  const [refreshingFeed, setRefreshingFeed] = useState(false);
+
+  const refreshOpenChallengesNow = useCallback(async () => {
+    setRefreshingFeed(true);
+    try {
+      const fresh = await getOpenChallengesFromServer();
+      if (mountedRef.current && fresh.length >= 0) {
+        setChallenges(fresh);
+        setLobbyError('');
+      }
+    } finally {
+      if (mountedRef.current) setRefreshingFeed(false);
+    }
+  }, []);
+
+  // Subscribe to real open challenges in public lobby + periodic server sync when visible
   useEffect(() => {
     if (!profileUid) return;
+    let active = true;
     const unsubOpen = subscribeOpenChallenges(
       (list) => {
+        if (!active) return;
         setChallenges(list);
       },
       () => {
-        if (mountedRef.current) {
+        if (active && mountedRef.current) {
           setLobbyError(t('onlineConnectionLost'));
         }
       }
     );
+
+    const syncOpenFromServer = () => {
+      if (document.visibilityState !== 'visible') return;
+      void getOpenChallengesFromServer().then((list) => {
+        if (active && mountedRef.current) {
+          setChallenges(list);
+        }
+      });
+    };
+    syncOpenFromServer();
+    const feedPollId = window.setInterval(syncOpenFromServer, 5000);
+    window.addEventListener('focus', syncOpenFromServer);
+    document.addEventListener('visibilitychange', syncOpenFromServer);
+
     return () => {
+      active = false;
       unsubOpen();
+      clearInterval(feedPollId);
+      window.removeEventListener('focus', syncOpenFromServer);
+      document.removeEventListener('visibilitychange', syncOpenFromServer);
     };
   }, [profileUid, t]);
 
@@ -343,8 +403,10 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
   const myChallengeFromFeedId =
     challenges.find((c) => c.creatorUid === profileUid)?.id ?? null;
   const effectiveChallengeId = pendingChallengeId || myChallengeFromFeedId;
+  const effectiveChallengeIdRef = useRef<string | null>(effectiveChallengeId);
+  effectiveChallengeIdRef.current = effectiveChallengeId;
 
-  // Subscribe + server-watchdog for when someone accepts our public lobby challenge
+  // Gapless real-time listener for when someone accepts our public lobby challenge
   useEffect(() => {
     if (!profileUid) return;
     let active = true;
@@ -356,14 +418,24 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
         sound.playSpecial();
         enterMatchSafely(matchedMatchId);
       },
-      effectiveChallengeId,
+      () => effectiveChallengeIdRef.current,
       () => {
-        // Keep polling via watchdog if snapshot stream hiccups
+        // Keep polling via watchdog below if snapshot stream hiccups
       }
     );
 
+    return () => {
+      active = false;
+      unsubMatched();
+    };
+  }, [enterMatchSafely, profileUid]);
+
+  // Independent 2s server-watchdog for our active pending challenge
+  useEffect(() => {
+    if (!profileUid || !effectiveChallengeId) return;
+    let active = true;
+
     const checkPendingChallengeFromServer = () => {
-      if (!effectiveChallengeId) return;
       void getChallengeFromServer(effectiveChallengeId).then((ch) => {
         if (!active || !mountedRef.current || !ch) return;
         if (ch.status === 'matched' && ch.matchedMatchId) {
@@ -376,9 +448,8 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
       });
     };
 
-    const pollId = effectiveChallengeId
-      ? window.setInterval(checkPendingChallengeFromServer, 2000)
-      : null;
+    checkPendingChallengeFromServer();
+    const pollId = window.setInterval(checkPendingChallengeFromServer, 2000);
 
     const onVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible') {
@@ -390,8 +461,7 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
 
     return () => {
       active = false;
-      unsubMatched();
-      if (pollId !== null) clearInterval(pollId);
+      clearInterval(pollId);
       window.removeEventListener('focus', onVisibilityOrFocus);
       document.removeEventListener('visibilitychange', onVisibilityOrFocus);
     };
@@ -467,14 +537,25 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
           setTab('magic');
           setMagicMatchId(res.match.id);
           setJoinNotice(t('onlineMagicSelfLink'));
+        } else if (res.status === 'already_started') {
+          setDeepLinkError(t('onlineMagicAlreadyStarted'));
+          onClearPendingJoin();
         } else {
           setDeepLinkError(t('onlineMagicInvalid'));
           onClearPendingJoin();
         }
-      } catch {
+      } catch (err) {
         if (mountedRef.current) {
-          setDeepLinkError(t('onlineLobbyError'));
-          setDeepLinkRetryable(true);
+          if (
+            err instanceof Error &&
+            (err.message === 'PLAYER_BANNED' || err.message === 'PLAYER_SUSPENDED')
+          ) {
+            setDeepLinkError(t('onlineSanctionBlocked'));
+            onClearPendingJoin();
+          } else {
+            setDeepLinkError(t('onlineLobbyError'));
+            setDeepLinkRetryable(true);
+          }
         }
       } finally {
         if (mountedRef.current) setJoiningDeepLink(false);
@@ -576,8 +657,15 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
       const id = await createLobbyChallenge(profile, selectedTimeControl, preferredColor);
       savePendingChallengeId(profile.uid, id);
       setPendingChallengeId(id);
-    } catch {
-      setLobbyError(t('onlineLobbyError'));
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        (err.message === 'PLAYER_BANNED' || err.message === 'PLAYER_SUSPENDED')
+      ) {
+        setLobbyError(t('onlineSanctionBlocked'));
+      } else {
+        setLobbyError(t('onlineLobbyError'));
+      }
     } finally {
       setCreatingChallenge(false);
     }
@@ -608,6 +696,11 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
     } catch (err) {
       if (err instanceof Error && err.message === 'CHALLENGE_UNAVAILABLE') {
         setLobbyError(t('onlineChallengeTaken'));
+      } else if (
+        err instanceof Error &&
+        (err.message === 'PLAYER_BANNED' || err.message === 'PLAYER_SUSPENDED')
+      ) {
+        setLobbyError(t('onlineSanctionBlocked'));
       } else {
         setLobbyError(t('onlineLobbyError'));
       }
@@ -627,8 +720,15 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
       const id = await createMagicLinkMatch(profile, selectedTimeControl, preferredColor);
       saveWaitingMagicMatchId(profile.uid, id);
       setMagicMatchId(id);
-    } catch {
-      setLobbyError(t('onlineLobbyError'));
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        (err.message === 'PLAYER_BANNED' || err.message === 'PLAYER_SUSPENDED')
+      ) {
+        setLobbyError(t('onlineSanctionBlocked'));
+      } else {
+        setLobbyError(t('onlineLobbyError'));
+      }
     } finally {
       setCreatingMagic(false);
     }
@@ -874,6 +974,14 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
         )}
       </header>
 
+      {/* Global Broadcast Banner from Moderator */}
+      {systemConfig?.broadcastBanner && (
+        <div className="mt-2.5 flex items-center gap-2 rounded-2xl border-2 border-amber-400/70 bg-amber-950/75 px-3 py-2 text-xs font-extrabold text-amber-200 shadow">
+          <Megaphone className="h-4 w-4 shrink-0 text-amber-400" />
+          <span>{systemConfig.broadcastBanner}</span>
+        </div>
+      )}
+
       {/* Deep Link / Lobby Errors & Notices */}
       {(deepLinkError || lobbyError) && (
         <div className="mt-2.5 flex flex-col items-center gap-2 rounded-2xl border-2 border-rose-500 bg-rose-950/90 px-3 py-2 text-center text-xs font-bold text-rose-200 shadow">
@@ -1030,6 +1138,18 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
                     <span className="truncate text-sm font-extrabold text-white">
                       {profile.nickname}
                     </span>
+                    {profile.role === 'founder' && (
+                      <span className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-amber-400 px-1.5 py-0.5 text-[9px] font-extrabold text-slate-950">
+                        <Crown className="h-2.5 w-2.5" />
+                        {t('modRoleFounder')}
+                      </span>
+                    )}
+                    {profile.role === 'moderator' && (
+                      <span className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-sky-400 px-1.5 py-0.5 text-[9px] font-extrabold text-slate-950">
+                        <Shield className="h-2.5 w-2.5" />
+                        {t('modRoleModerator')}
+                      </span>
+                    )}
                     <button
                       type="button"
                       onClick={() => {
@@ -1070,6 +1190,37 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
                 </div>
               </div>
 
+              {/* Active Sanction Warning Strip with direct Appeal button */}
+              {(profile.banned ||
+                isPlayerSuspended(profile) ||
+                isPlayerChatMuted(profile) ||
+                (profile.warningsCount ?? 0) > 0) && (
+                <div className="flex items-center justify-between gap-2 rounded-xl border border-rose-500/70 bg-rose-950/75 px-3 py-2 text-xs font-bold text-rose-200">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <ShieldAlert className="h-4 w-4 shrink-0 text-rose-400" />
+                    <span className="truncate">
+                      {profile.banned
+                        ? t('appealSanctionBannerBanned')
+                        : isPlayerSuspended(profile)
+                        ? t('appealSanctionBannerSuspended')
+                        : isPlayerChatMuted(profile)
+                        ? t('appealSanctionBannerMuted')
+                        : t('appealSanctionBannerWarned', { count: profile.warningsCount ?? 0 })}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      sound.playClick();
+                      onOpenAppeals();
+                    }}
+                    className="shrink-0 rounded-lg border border-amber-400/70 bg-amber-400/20 px-2.5 py-1 text-[11px] font-extrabold text-amber-200"
+                  >
+                    {t('appealsBtn')}
+                  </button>
+                </div>
+              )}
+
               {/* Interactive All-Time-Control Elo Breakdown */}
               <div className="grid grid-cols-5 gap-1 border-t border-slate-800 pt-2">
                 {categories.map((cat) => {
@@ -1097,23 +1248,63 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
                 })}
               </div>
 
-              {/* Match History Action inside Profile */}
-              <button
-                type="button"
-                onClick={() => {
-                  sound.playClick();
-                  onOpenHistory();
-                }}
-                className="flex min-h-[34px] w-full items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950/75 px-3 py-1.5 text-xs font-extrabold text-amber-200 transition hover:border-amber-400 hover:bg-slate-800"
-              >
-                <History className="h-3.5 w-3.5 text-amber-300" />
-                <span>{t('profileHistoryBtn')}</span>
-                {historyCount > 0 && (
-                  <span className="rounded-md bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-extrabold text-amber-300 tabular-nums">
-                    {historyCount}
-                  </span>
+              {/* Profile Quick Actions: History, Report, Appeals, Moderation Console */}
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    sound.playClick();
+                    onOpenHistory();
+                  }}
+                  className="flex min-h-[34px] flex-1 items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950/75 px-2.5 py-1 text-[11px] font-extrabold text-amber-200 transition hover:border-amber-400 hover:bg-slate-800"
+                >
+                  <History className="h-3.5 w-3.5 text-amber-300" />
+                  <span className="truncate">{t('profileHistoryBtn')}</span>
+                  {historyCount > 0 && (
+                    <span className="rounded-md bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-extrabold text-amber-300 tabular-nums">
+                      {historyCount}
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    sound.playClick();
+                    onOpenReport();
+                  }}
+                  className="flex min-h-[34px] items-center justify-center gap-1 rounded-xl border border-rose-500/50 bg-rose-950/60 px-2.5 py-1 text-[11px] font-extrabold text-rose-200 transition hover:bg-rose-900/60"
+                >
+                  <Flag className="h-3.5 w-3.5" />
+                  <span>{t('reportBtn')}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    sound.playClick();
+                    onOpenAppeals();
+                  }}
+                  className="flex min-h-[34px] items-center justify-center gap-1 rounded-xl border border-amber-500/50 bg-amber-950/50 px-2.5 py-1 text-[11px] font-extrabold text-amber-200 transition hover:bg-amber-900/50"
+                >
+                  <Gavel className="h-3.5 w-3.5" />
+                  <span>{t('appealsBtn')}</span>
+                </button>
+
+                {isModerator(profile) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      sound.playClick();
+                      onOpenModeration();
+                    }}
+                    className="flex min-h-[34px] items-center justify-center gap-1 rounded-xl border border-sky-400/70 bg-sky-950/75 px-2.5 py-1 text-[11px] font-extrabold text-sky-200 transition hover:bg-sky-900/75"
+                  >
+                    <ShieldCheck className="h-3.5 w-3.5 text-sky-300" />
+                    <span>{t('modConsoleBtn')}</span>
+                  </button>
                 )}
-              </button>
+              </div>
             </div>
 
             {lichessError && (
@@ -1201,6 +1392,17 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
                       <span className="text-xs font-extrabold text-amber-300">
                         {t('onlineOpenChallenges', { count: challenges.length })}
                       </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          sound.playClick();
+                          void refreshOpenChallengesNow();
+                        }}
+                        disabled={refreshingFeed}
+                        className="flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800/80 px-2 py-1 text-[10px] font-bold text-slate-300 transition hover:border-amber-300 hover:text-amber-200 disabled:opacity-50"
+                      >
+                        <RefreshCw className={`h-3 w-3 ${refreshingFeed ? 'animate-spin' : ''}`} />
+                      </button>
                     </div>
 
                     {challenges.length === 0 ? (
@@ -1250,14 +1452,33 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
                                   {t('onlineCancelChallenge')}
                                 </button>
                               ) : (
-                                <button
-                                  type="button"
-                                  disabled={acceptingId === ch.id}
-                                  onClick={() => handleAcceptChallenge(ch)}
-                                  className="min-h-[36px] shrink-0 rounded-xl border-2 border-slate-950 bg-emerald-400 px-3.5 py-1 text-xs font-extrabold text-slate-950 shadow-[0_2px_0_#0f172a] transition hover:brightness-105 active:translate-y-0.5 active:shadow-none disabled:opacity-50"
-                                >
-                                  {t('onlineAcceptBtn')}
-                                </button>
+                                <div className="flex shrink-0 items-center gap-1.5">
+                                  {isModerator(profile) && (
+                                    <button
+                                      type="button"
+                                      title={t('modActionDeleteChallenge')}
+                                      onClick={() => {
+                                        sound.playClick();
+                                        void moderatorCancelChallenge(
+                                          profile,
+                                          ch.id,
+                                          ch.creatorNickname
+                                        );
+                                      }}
+                                      className="flex min-h-[36px] w-9 items-center justify-center rounded-xl border-2 border-slate-950 bg-rose-900/90 text-rose-200 hover:bg-rose-700"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    disabled={acceptingId === ch.id}
+                                    onClick={() => handleAcceptChallenge(ch)}
+                                    className="min-h-[36px] shrink-0 rounded-xl border-2 border-slate-950 bg-emerald-400 px-3.5 py-1 text-xs font-extrabold text-slate-950 shadow-[0_2px_0_#0f172a] transition hover:brightness-105 active:translate-y-0.5 active:shadow-none disabled:opacity-50"
+                                  >
+                                    {t('onlineAcceptBtn')}
+                                  </button>
+                                </div>
                               )}
                             </div>
                           );

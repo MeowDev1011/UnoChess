@@ -4,7 +4,9 @@ import {
   Check,
   Clock,
   Copy,
+  Flag,
   Layers,
+  MessageSquare,
   Pause,
   ShieldAlert,
   Sparkles,
@@ -24,6 +26,7 @@ import {
   GameMode,
   GamePhase,
   LocalPlayStyle,
+  MatchChatMessage,
   Move,
   MoveHistoryEntry,
   OnlineMatchDoc,
@@ -34,6 +37,7 @@ import {
   PlayerProfile,
   ReplayNode,
   SavedMatchRecord,
+  SystemModerationConfig,
   TIME_CONTROL_PRESETS,
   TimeControlPreset,
   WILD_COLOR_PIECE_MAP,
@@ -58,7 +62,7 @@ import {
 } from './engine/chess';
 import { createDeck, shuffleCards } from './engine/deck';
 import { buildPGN, coordToAlgebraic, downloadPGNFile, formatMoveToSAN } from './engine/pgn';
-import { coordToSq, serializeBoardCompact } from './engine/replay';
+import { coordToSq, serializeBoardCompact, sqToCoord } from './engine/replay';
 import { sound } from './utils/audio';
 import {
   applyMatchEloToMyProfile,
@@ -69,9 +73,11 @@ import {
   getMatchFromServer,
   loadActiveOnlineMatchId,
   loadDeviceAccount,
+  loadPendingJoinId,
   loginWithLichessProfile,
   pushMatchUpdate,
   saveActiveOnlineMatchId,
+  savePendingJoinId,
   saveWaitingMagicMatchId,
   subscribeMatch,
   subscribePlayerProfile,
@@ -85,6 +91,11 @@ import {
   updateSavedMatchReplayTree,
 } from './services/matchHistoryService';
 import { exchangeLichessCodeForProfile } from './services/lichessService';
+import {
+  fetchMatchChatFromServer,
+  subscribeMatchChat,
+  subscribeSystemModerationConfig,
+} from './services/moderationChatService';
 import { OrientationLock } from './components/OrientationLock';
 import { StartScreen } from './components/StartScreen';
 import { OnlineLobbyView } from './components/OnlineLobbyView';
@@ -96,6 +107,10 @@ import { PauseModal } from './components/PauseModal';
 import { CardGuideModal } from './components/CardGuideModal';
 import { GameReplayModal } from './components/GameReplayModal';
 import { ProfileHistoryModal } from './components/ProfileHistoryModal';
+import { MatchChatModal } from './components/MatchChatModal';
+import { ReportContextPrefill, ReportModal } from './components/ReportModal';
+import { AppealsModal } from './components/AppealsModal';
+import { ModerationConsoleModal } from './components/ModerationConsoleModal';
 import {
   GameOverModal,
   PromotionModal,
@@ -124,10 +139,19 @@ export default function App() {
     if (typeof window === 'undefined') return null;
     const params = new URLSearchParams(window.location.search);
     const joinId = params.get('join');
-    return joinId && /^[a-zA-Z0-9_-]{3,128}$/.test(joinId) ? joinId : null;
+    if (joinId && /^[a-zA-Z0-9_-]{3,128}$/.test(joinId)) {
+      savePendingJoinId(joinId);
+      return joinId;
+    }
+    return loadPendingJoinId();
   });
   const [onlineMatchId, setOnlineMatchId] = useState<string | null>(null);
   const [onlineMatch, setOnlineMatch] = useState<OnlineMatchDoc | null>(null);
+  const onlineMatchRef = useRef<OnlineMatchDoc | null>(null);
+  onlineMatchRef.current = onlineMatch;
+  const matchVersionRef = useRef<number>(1);
+  const lastSnapshotSigRef = useRef<string>('');
+  const applyMatchSnapshotRef = useRef<(match: OnlineMatchDoc | null) => void>(() => {});
   const [joinToastMsg, setJoinToastMsg] = useState<string | null>(null);
   const [onlineSyncWarning, setOnlineSyncWarning] = useState<string | null>(null);
   const [waitingCopied, setWaitingCopied] = useState(false);
@@ -140,6 +164,7 @@ export default function App() {
   const myProfileRef = useRef<PlayerProfile | null>(null);
   myProfileRef.current = myProfile;
   const lastSeenDuelTextRef = useRef<string>('');
+  const gameSessionRef = useRef<number>(0);
 
   // Core game state machine
   const [phase, setPhase] = useState<GamePhase>('TITLE_MENU');
@@ -197,6 +222,10 @@ export default function App() {
   elapsedSecondsRef.current = elapsedSeconds;
   const [p1TimeMs, setP1TimeMs] = useState(0);
   const [p2TimeMs, setP2TimeMs] = useState(0);
+  const p1TimeMsRef = useRef(0);
+  p1TimeMsRef.current = p1TimeMs;
+  const p2TimeMsRef = useRef(0);
+  p2TimeMsRef.current = p2TimeMs;
   const [winnerName, setWinnerName] = useState<string | null>(null);
   const [gameOverReason, setGameOverReason] = useState('');
   const [finalResultToken, setFinalResultToken] = useState<'1-0' | '0-1' | '1/2-1/2' | '*'>('*');
@@ -211,9 +240,82 @@ export default function App() {
   const [isProfileHistoryOpen, setIsProfileHistoryOpen] = useState(false);
   const [replayRecord, setReplayRecord] = useState<SavedMatchRecord | null>(null);
 
+  // Real-time Match Chat, Moderation Config, Reports & Appeals
+  const [systemModerationConfig, setSystemModerationConfig] =
+    useState<SystemModerationConfig | null>(null);
+  const [chatMessages, setChatMessages] = useState<MatchChatMessage[]>([]);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const isChatOpenRef = useRef(false);
+  isChatOpenRef.current = isChatOpen;
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
+  const seenChatCountRef = useRef(0);
+  const [isReportOpen, setIsReportOpen] = useState(false);
+  const [reportContext, setReportContext] = useState<ReportContextPrefill | null>(null);
+  const [isAppealsOpen, setIsAppealsOpen] = useState(false);
+  const [isModConsoleOpen, setIsModConsoleOpen] = useState(false);
+
+  const openReportModal = useCallback((ctx?: ReportContextPrefill | null) => {
+    sound.playClick();
+    setReportContext(ctx ?? null);
+    setIsReportOpen(true);
+  }, []);
+
   // Audio UI state synced from Web Audio engine
   const [audioState, setAudioState] = useState(() => sound.getState());
   const syncAudioState = () => setAudioState({ ...sound.getState() });
+
+  // Subscribe to global moderation/chat safety config
+  useEffect(() => {
+    const unsub = subscribeSystemModerationConfig(setSystemModerationConfig);
+    return () => unsub();
+  }, []);
+
+  // Subscribe to real-time in-match chat when playing online
+  useEffect(() => {
+    if (mode !== 'online' || !onlineMatchId) {
+      setChatMessages([]);
+      setUnreadChatCount(0);
+      seenChatCountRef.current = 0;
+      setIsChatOpen(false);
+      return;
+    }
+    let active = true;
+    const handleChatList = (list: MatchChatMessage[]) => {
+      if (!active) return;
+      setChatMessages(list);
+      if (isChatOpenRef.current) {
+        seenChatCountRef.current = list.length;
+        setUnreadChatCount(0);
+      } else {
+        const myUid = myProfileRef.current?.uid ?? '';
+        const newFromOther = list
+          .slice(seenChatCountRef.current)
+          .filter((m) => m.senderUid !== myUid).length;
+        setUnreadChatCount((prev) =>
+          Math.max(prev, newFromOther, list.length - seenChatCountRef.current > 0 ? newFromOther : 0)
+        );
+      }
+    };
+
+    const unsub = subscribeMatchChat(onlineMatchId, handleChatList);
+    void fetchMatchChatFromServer(onlineMatchId).then((list) => {
+      if (active && list.length > 0) {
+        handleChatList(list);
+      }
+    });
+
+    return () => {
+      active = false;
+      unsub();
+    };
+  }, [mode, onlineMatchId]);
+
+  useEffect(() => {
+    if (isChatOpen) {
+      seenChatCountRef.current = chatMessages.length;
+      setUnreadChatCount(0);
+    }
+  }, [chatMessages.length, isChatOpen]);
 
   // Open online lobby automatically when arriving via a ?join=<matchId> magic link
   useEffect(() => {
@@ -504,15 +606,46 @@ export default function App() {
     [activeFaction, capturedWhitePieces, capturedBlackPieces]
   );
 
-  // Sync incoming real-time online match snapshots + immediate server fetch & focus sync
+  // Sync incoming real-time online match snapshots + immediate server fetch, deduplication & watchdog
   const isMatchWaiting = onlineMatch?.status === 'waiting';
+  const shouldPollMatch =
+    mode === 'online' &&
+    Boolean(onlineMatchId) &&
+    (isMatchWaiting ||
+      (onlineMatch?.status === 'active' && !isHumanTurn) ||
+      Boolean(onlineSyncWarning));
+
   useEffect(() => {
     if (mode !== 'online' || !onlineMatchId) return;
     let active = true;
+    const isInitialEnter = lastSnapshotSigRef.current === '';
 
     const applyMatchSnapshot = (match: OnlineMatchDoc | null) => {
       if (!active || !match) return;
       setOnlineSyncWarning(null);
+
+      const prevMatch = onlineMatchRef.current;
+      const isStatusTransition =
+        !prevMatch ||
+        prevMatch.id !== match.id ||
+        prevMatch.status !== match.status ||
+        prevMatch.guestUid !== match.guestUid;
+
+      // Reject older out-of-order versions unless it's a terminal/activation state transition
+      if (
+        !isStatusTransition &&
+        match.status === 'active' &&
+        (match.stateVersion || 1) < matchVersionRef.current
+      ) {
+        return;
+      }
+
+      const sig = `${match.id}|${match.status}|${match.guestUid}|${match.stateVersion}|${match.phase}|${match.movesRemaining}|${match.activePlayer}|${match.moveHistory?.length ?? 0}`;
+      if (sig === lastSnapshotSigRef.current) {
+        return;
+      }
+      lastSnapshotSigRef.current = sig;
+      matchVersionRef.current = Math.max(matchVersionRef.current, match.stateVersion || 1);
       setOnlineMatch(match);
 
       if (match.status === 'waiting') {
@@ -662,6 +795,7 @@ export default function App() {
         setPhase(match.phase);
       }
     };
+    applyMatchSnapshotRef.current = applyMatchSnapshot;
 
     const unsub = subscribeMatch(onlineMatchId, applyMatchSnapshot, () => {
       if (active) {
@@ -674,9 +808,10 @@ export default function App() {
         if (active && m) applyMatchSnapshot(m);
       });
     };
-    syncFromServer();
+    if (isInitialEnter) {
+      syncFromServer();
+    }
 
-    const waitPollId = isMatchWaiting ? window.setInterval(syncFromServer, 2000) : null;
     const onVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible') {
         syncFromServer();
@@ -687,23 +822,47 @@ export default function App() {
 
     return () => {
       active = false;
+      applyMatchSnapshotRef.current = () => {};
       unsub();
-      if (waitPollId !== null) clearInterval(waitPollId);
       window.removeEventListener('focus', onVisibilityOrFocus);
       document.removeEventListener('visibilitychange', onVisibilityOrFocus);
     };
-  }, [isMatchWaiting, mode, onlineMatchId, persistCompletedMatch, t]);
+  }, [mode, onlineMatchId, persistCompletedMatch, t]);
 
-  // Helper to push authoritative online updates when playing online
+  // Independent lightweight watchdog poll while waiting for opponent (magic link OR rival's turn OR reconnecting)
+  useEffect(() => {
+    if (!shouldPollMatch || !onlineMatchId) return;
+    let active = true;
+    const pollMs = isMatchWaiting ? 2000 : 3000;
+    const id = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void getMatchFromServer(onlineMatchId).then((m) => {
+        if (!active || !m) return;
+        applyMatchSnapshotRef.current(m);
+      });
+    }, pollMs);
+
+    return () => {
+      active = false;
+      clearInterval(id);
+    };
+  }, [isMatchWaiting, onlineMatchId, shouldPollMatch]);
+
+  // Helper to push authoritative online updates when playing online (monotonically versioned + serialized)
   const pushOnline = useCallback(
     (patch: Parameters<typeof pushMatchUpdate>[1]) => {
-      if (mode !== 'online' || !onlineMatch) return;
-      void pushMatchUpdate(onlineMatch.id, {
+      const current = onlineMatchRef.current;
+      if (!current) return;
+      matchVersionRef.current = Math.max(matchVersionRef.current, current.stateVersion || 1) + 1;
+      const nextVersion = matchVersionRef.current;
+      void pushMatchUpdate(current.id, {
         ...patch,
-        stateVersion: (onlineMatch.stateVersion || 1) + 1,
+        stateVersion: nextVersion,
+      }).catch(() => {
+        setOnlineSyncWarning(t('onlineConnectionLost'));
       });
     },
-    [mode, onlineMatch]
+    [t]
   );
 
   // Enter an online match from Lobby or Magic Link
@@ -711,7 +870,10 @@ export default function App() {
     sound.unlock();
     sound.startMusic();
     syncAudioState();
+    gameSessionRef.current += 1;
     lastSeenDuelTextRef.current = '';
+    lastSnapshotSigRef.current = '';
+    matchVersionRef.current = 1;
     if (myProfileRef.current?.uid) {
       saveActiveOnlineMatchId(myProfileRef.current.uid, matchId);
     }
@@ -741,6 +903,7 @@ export default function App() {
   }, []);
 
   const handleClearPendingJoin = useCallback(() => {
+    savePendingJoinId(null);
     setPendingJoinMatchId(null);
     if (typeof window !== 'undefined' && window.location.search.includes('join=')) {
       const url = new URL(window.location.href);
@@ -920,6 +1083,7 @@ export default function App() {
     sound.startMusic();
     sound.playShuffle();
     syncAudioState();
+    gameSessionRef.current += 1;
 
     // White always moves first in chess
     const startingPlayer: PlayerId = playerColor === 'white' ? 'p1' : 'p2';
@@ -1002,8 +1166,8 @@ export default function App() {
           winnerUid,
           winReasonKey: reasonKey,
           eloDelta: delta,
-          p1TimeMs: Math.round(p1TimeMs),
-          p2TimeMs: Math.round(p2TimeMs),
+          p1TimeMs: Math.round(p1TimeMsRef.current),
+          p2TimeMs: Math.round(p2TimeMsRef.current),
         });
         return;
       }
@@ -1038,8 +1202,6 @@ export default function App() {
       moveHistory,
       onlineMatch,
       p1Faction,
-      p1TimeMs,
-      p2TimeMs,
       persistCompletedMatch,
       playerLabel,
       playerUidForId,
@@ -1176,15 +1338,17 @@ export default function App() {
         : [...(overrideDiscardPile ?? discardPile)];
       setDiscardPile(nextDiscard);
 
-      let nextP1Ms = p1TimeMs;
-      let nextP2Ms = p2TimeMs;
+      let nextP1Ms = p1TimeMsRef.current;
+      let nextP2Ms = p2TimeMsRef.current;
       if (timeControl.minutes > 0 && timeControl.increment > 0) {
         const incMs = timeControl.increment * 1000;
         if (activePlayer === 'p1') {
-          nextP1Ms = p1TimeMs + incMs;
+          nextP1Ms = nextP1Ms + incMs;
+          p1TimeMsRef.current = nextP1Ms;
           setP1TimeMs(nextP1Ms);
         } else {
-          nextP2Ms = p2TimeMs + incMs;
+          nextP2Ms = nextP2Ms + incMs;
+          p2TimeMsRef.current = nextP2Ms;
           setP2TimeMs(nextP2Ms);
         }
       }
@@ -1299,8 +1463,6 @@ export default function App() {
       mode,
       moveHistory,
       p1Faction,
-      p1TimeMs,
-      p2TimeMs,
       playerLabel,
       pushOnline,
       skipOpponentTurns,
@@ -1364,16 +1526,20 @@ export default function App() {
         });
       }
 
+      const sessionAtSchedule = gameSessionRef.current;
       window.setTimeout(() => {
-        let nextP1Ms = p1TimeMs;
-        let nextP2Ms = p2TimeMs;
+        if (gameSessionRef.current !== sessionAtSchedule) return;
+        let nextP1Ms = p1TimeMsRef.current;
+        let nextP2Ms = p2TimeMsRef.current;
         if (timeControl.minutes > 0 && timeControl.increment > 0) {
           const incMs = timeControl.increment * 1000;
           if (activePlayer === 'p1') {
-            nextP1Ms = p1TimeMs + incMs;
+            nextP1Ms = nextP1Ms + incMs;
+            p1TimeMsRef.current = nextP1Ms;
             setP1TimeMs(nextP1Ms);
           } else {
-            nextP2Ms = p2TimeMs + incMs;
+            nextP2Ms = nextP2Ms + incMs;
+            p2TimeMsRef.current = nextP2Ms;
             setP2TimeMs(nextP2Ms);
           }
         }
@@ -1448,8 +1614,6 @@ export default function App() {
       moveHistory,
       myOnlineRole,
       p1Faction,
-      p1TimeMs,
-      p2TimeMs,
       playerLabel,
       pushOnline,
       t,
@@ -1560,7 +1724,9 @@ export default function App() {
             lastDuelText: duelMsg,
           });
         }
+        const sessionAtZero = gameSessionRef.current;
         window.setTimeout(() => {
+          if (gameSessionRef.current !== sessionAtZero) return;
           endTurn(
             workingBoard,
             card,
@@ -1825,8 +1991,10 @@ export default function App() {
           });
         } else {
           setBannerMsg(t('bannerNoMovesEnd'));
+          const sessionAtNoMoves = gameSessionRef.current;
           window.setTimeout(
-            () =>
+            () => {
+              if (gameSessionRef.current !== sessionAtNoMoves) return;
               endTurn(
                 workingBoard,
                 card,
@@ -1838,7 +2006,8 @@ export default function App() {
                 undefined,
                 workingHistory,
                 { color: nextChainColor, by: nextChainBy }
-              ),
+              );
+            },
             900
           );
         }
@@ -1938,11 +2107,14 @@ export default function App() {
       });
     }
 
+    const sessionAtDraw = gameSessionRef.current;
     window.setTimeout(() => {
+      if (gameSessionRef.current !== sessionAtDraw) return;
       setCardFaceDown(false);
     }, 90);
 
     window.setTimeout(() => {
+      if (gameSessionRef.current !== sessionAtDraw) return;
       resolveDrawnCard(drawn, rest, workingDiscard);
     }, 620);
   }, [
@@ -2995,8 +3167,356 @@ export default function App() {
     finishWithWin(winnerPid, 'bannerResignWin', board);
   }, [board, finishWithWin, mode, myOnlineRole, myProfile, onlineMatch]);
 
-  // ---------- BOT AI TURN LOOP ----------
+  // ---------- BOT AI TURN LOOP (Clock-immune ref-backed scheduler) ----------
   const botTimerRef = useRef<number | null>(null);
+  const runBotStepRef = useRef<() => void>(() => {});
+
+  runBotStepRef.current = () => {
+    if (
+      mode !== 'bot' ||
+      activePlayer !== 'p2' ||
+      isPaused ||
+      phase === 'TITLE_MENU' ||
+      phase === 'GAME_OVER' ||
+      phase === 'CARD_REVEALING' ||
+      phase === 'REVERSING'
+    ) {
+      return;
+    }
+
+    if (phase === 'DRAW_PHASE') {
+      sound.unlock();
+      let workingDeck = [...drawPile];
+      let workingDiscard = [...discardPile];
+      if (workingDeck.length === 0) {
+        if (workingDiscard.length === 0) {
+          workingDeck = createDeck();
+        } else {
+          workingDeck = shuffleCards(workingDiscard);
+          workingDiscard = [];
+          setDiscardPile([]);
+        }
+        sound.playShuffle();
+      }
+      const [drawn, ...rest] = workingDeck;
+      const sessionAtBotDraw = gameSessionRef.current;
+      setDrawPile(rest);
+      setCurrentCard(drawn);
+      setCardFaceDown(true);
+      setPhase('CARD_REVEALING');
+      setBannerMsg(t('bannerDrawing', { name: playerLabel('p2') }));
+      sound.playDraw();
+      window.setTimeout(() => {
+        if (gameSessionRef.current !== sessionAtBotDraw) return;
+        setCardFaceDown(false);
+      }, 90);
+      window.setTimeout(() => {
+        if (gameSessionRef.current !== sessionAtBotDraw) return;
+        resolveDrawnCard(drawn, rest, workingDiscard);
+      }, 620);
+    } else if (phase === 'WILD_COLOR_CHOICE') {
+      handleSelectWildColor(chooseBotWildColor());
+    } else if (phase === 'WILD_PLACE_PIECE_PHASE') {
+      const squares = getWildPlacementSquares(board, activeFaction);
+      if (pendingWildPieceType && squares.length > 0) {
+        const dest = squares[Math.floor(Math.random() * squares.length)];
+        const nextBoard = cloneBoard(board);
+        nextBoard[dest.row][dest.col] = {
+          id: `wild-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          type: pendingWildPieceType,
+          faction: activeFaction,
+          pieceNumber: 1,
+          hasMoved: true,
+        };
+        sound.playSpecial();
+        setBoard(nextBoard);
+        setPendingWildPieceType(null);
+        setWildTeleportPending(true);
+
+        const pLetter =
+          pendingWildPieceType === 'queen'
+            ? 'Q'
+            : pendingWildPieceType === 'rook'
+            ? 'R'
+            : pendingWildPieceType === 'bishop'
+            ? 'B'
+            : pendingWildPieceType === 'knight'
+            ? 'N'
+            : 'P';
+        const destSq = coordToSq(dest);
+        setMoveHistory((prev) => [
+          ...prev,
+          {
+            ply: prev.length + 1,
+            turnNumber: turnsPlayed,
+            faction: activeFaction,
+            san: `+${pLetter}@${destSq}`,
+            comment: pieceLabel(pendingWildPieceType),
+            isChessMove: false,
+            cardColor: currentCard?.color ?? '',
+            cardValue: 'wild',
+            boardAfter: serializeBoardCompact(nextBoard),
+            toSq: destSq,
+          },
+        ]);
+
+        const step1Moves = getUnoChessLegalMoves(nextBoard, activeFaction, enPassantTarget, 1);
+        if (step1Moves.length > 0) {
+          setMovesRemaining(1);
+          setPhase('MOVE_PHASE');
+          setBannerMsg(t('bannerWildStep1'));
+        } else {
+          setMovesRemaining(0);
+          setPhase('WILD_TELEPORT_PHASE');
+          setBannerMsg(t('bannerWildStep2'));
+        }
+      } else {
+        setPendingWildPieceType(null);
+        setWildTeleportPending(true);
+        setMovesRemaining(1);
+        setPhase('MOVE_PHASE');
+      }
+    } else if (phase === 'WILD_PLUS4_CHOICE') {
+      handleSelectPlus4Mode(chooseBotPlus4Mode(board, enemyFaction));
+    } else if (phase === 'PROMOTION_CHOICE') {
+      handleSelectPromotion('queen');
+    } else if (phase === 'MOVE_PHASE') {
+      const syncColor: CardColor | null =
+        isFirstMoveOfTurn &&
+        currentCard &&
+        currentCard.value !== 'wild' &&
+        currentCard.value !== 'wild-draw'
+          ? currentCard.color
+          : null;
+      const botMove = chooseBotMove(
+        board,
+        activeFaction,
+        enPassantTarget,
+        movesRemaining,
+        botLevel,
+        syncColor
+      );
+      if (botMove) {
+        executeMove(botMove, 'queen', movesRemaining - 1);
+      } else {
+        endTurn(board, currentCard);
+      }
+    } else if (phase === 'WILD_TELEPORT_PHASE') {
+      const tp = chooseBotTeleport(board, activeFaction);
+      if (tp) {
+        const nextBoard = cloneBoard(board);
+        const p = nextBoard[tp.from.row][tp.from.col];
+        nextBoard[tp.from.row][tp.from.col] = null;
+        const promoRow = activeFaction === 'white' ? 0 : 7;
+        const autoType = p && p.type === 'pawn' && tp.to.row === promoRow ? 'queen' : p?.type;
+        nextBoard[tp.to.row][tp.to.col] = p
+          ? { ...p, type: autoType ?? p.type, hasMoved: true }
+          : null;
+        sound.playSpecial();
+        setBoard(nextBoard);
+        setWildTeleportPending(false);
+        const fromSq = coordToSq(tp.from);
+        const toSq = coordToSq(tp.to);
+        const nextHistory: MoveHistoryEntry[] = [
+          ...moveHistory,
+          {
+            ply: moveHistory.length + 1,
+            turnNumber: turnsPlayed,
+            faction: activeFaction,
+            san: `⚡${fromSq}→${toSq}`,
+            comment: t('teleportActive'),
+            isChessMove: false,
+            cardColor: currentCard?.color ?? '',
+            cardValue: currentCard?.value ?? 'wild',
+            boardAfter: serializeBoardCompact(nextBoard),
+            fromSq,
+            toSq,
+          },
+        ];
+        setMoveHistory(nextHistory);
+        endTurn(
+          nextBoard,
+          currentCard,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          nextHistory
+        );
+      } else {
+        setWildTeleportPending(false);
+        endTurn(board, currentCard);
+      }
+    } else if (phase === 'PLUS2_RECOVER_PHASE') {
+      const empties = getEmptyHomeRows(board, activeFaction);
+      const recovered = ownCapturedPieces[0];
+      if (recovered && empties.length > 0) {
+        const dest = empties[Math.floor(Math.random() * empties.length)];
+        const nextBoard = cloneBoard(board);
+        nextBoard[dest.row][dest.col] = { ...recovered, hasMoved: true };
+        sound.playSpecial();
+        setBoard(nextBoard);
+        let nextCapW = capturedWhitePieces;
+        let nextCapB = capturedBlackPieces;
+        if (activeFaction === 'white') {
+          nextCapW = capturedWhitePieces.filter((p) => p.id !== recovered.id);
+          setCapturedWhitePieces(nextCapW);
+        } else {
+          nextCapB = capturedBlackPieces.filter((p) => p.id !== recovered.id);
+          setCapturedBlackPieces(nextCapB);
+        }
+        const destSq = coordToSq(dest);
+        const nextHistory: MoveHistoryEntry[] = [
+          ...moveHistory,
+          {
+            ply: moveHistory.length + 1,
+            turnNumber: turnsPlayed,
+            faction: activeFaction,
+            san: `+2↑${destSq}`,
+            comment: pieceLabel(recovered.type),
+            isChessMove: false,
+            cardColor: currentCard?.color ?? '',
+            cardValue: 'draw2',
+            boardAfter: serializeBoardCompact(nextBoard),
+            toSq: destSq,
+          },
+        ];
+        setMoveHistory(nextHistory);
+        const rem = plus2Remaining - 1;
+        if (rem <= 0 || empties.length <= 1 || ownCapturedPieces.length <= 1) {
+          setPlus2Remaining(0);
+          endTurn(
+            nextBoard,
+            currentCard,
+            undefined,
+            undefined,
+            nextCapW,
+            nextCapB,
+            undefined,
+            undefined,
+            nextHistory
+          );
+        } else {
+          setPlus2Remaining(rem);
+        }
+      } else {
+        setPlus2Remaining(0);
+        endTurn(board, currentCard);
+      }
+    } else if (phase === 'PLUS2_STEAL_PHASE') {
+      const prio = getHighestPriorityEnemyCoords(board, enemyFaction);
+      const empties = getEmptyHomeRows(board, activeFaction);
+      if (prio.coords.length > 0 && empties.length > 0 && prio.tier !== 4) {
+        const targetCoord = prio.coords[0];
+        const dest = empties[Math.floor(Math.random() * empties.length)];
+        const stolen = board[targetCoord.row][targetCoord.col];
+        if (stolen) {
+          const nextBoard = cloneBoard(board);
+          nextBoard[targetCoord.row][targetCoord.col] = null;
+          nextBoard[dest.row][dest.col] = {
+            ...stolen,
+            faction: activeFaction,
+            hasMoved: true,
+          };
+          sound.playCapture();
+          setBoard(nextBoard);
+          const fromSq = coordToSq(targetCoord);
+          const toSq = coordToSq(dest);
+          const nextHistory: MoveHistoryEntry[] = [
+            ...moveHistory,
+            {
+              ply: moveHistory.length + 1,
+              turnNumber: turnsPlayed,
+              faction: activeFaction,
+              san: `+2⇄${fromSq}→${toSq}`,
+              comment: pieceLabel(stolen.type),
+              isChessMove: false,
+              cardColor: currentCard?.color ?? '',
+              cardValue: 'draw2',
+              boardAfter: serializeBoardCompact(nextBoard),
+              fromSq,
+              toSq,
+            },
+          ];
+          setMoveHistory(nextHistory);
+          const wasTier3 = stolen.type === 'rook' || stolen.type === 'queen';
+          const rem = wasTier3 ? 0 : plus2Remaining - 1;
+          const nextPrio = getHighestPriorityEnemyCoords(nextBoard, enemyFaction);
+          if (rem <= 0 || nextPrio.tier === 4 || empties.length <= 1) {
+            setPlus2Remaining(0);
+            endTurn(
+              nextBoard,
+              currentCard,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              nextHistory
+            );
+          } else {
+            setPlus2Remaining(nextPrio.tier === 3 ? 1 : rem);
+          }
+          return;
+        }
+      }
+      setPlus2Remaining(0);
+      endTurn(board, currentCard);
+    } else if (phase === 'PLUS4_ELIMINATE_PHASE') {
+      const prio = getHighestPriorityEnemyCoords(board, enemyFaction);
+      if (prio.coords.length > 0 && prio.tier !== 4) {
+        const targetCoord = prio.coords[0];
+        const victim = board[targetCoord.row][targetCoord.col];
+        const nextBoard = cloneBoard(board);
+        nextBoard[targetCoord.row][targetCoord.col] = null;
+        sound.playCapture();
+        setBoard(nextBoard);
+        const nextExiled = victim ? [...exiledPieces, victim] : exiledPieces;
+        if (victim) setExiledPieces(nextExiled);
+        const targetSq = coordToSq(targetCoord);
+        const nextHistory: MoveHistoryEntry[] = [
+          ...moveHistory,
+          {
+            ply: moveHistory.length + 1,
+            turnNumber: turnsPlayed,
+            faction: activeFaction,
+            san: `+4✕${targetSq}`,
+            comment: victim ? pieceLabel(victim.type) : '',
+            isChessMove: false,
+            cardColor: '',
+            cardValue: 'wild-draw',
+            boardAfter: serializeBoardCompact(nextBoard),
+            toSq: targetSq,
+          },
+        ];
+        setMoveHistory(nextHistory);
+        const rem = plus4Remaining - 1;
+        const nextPrio = getHighestPriorityEnemyCoords(nextBoard, enemyFaction);
+        if (rem <= 0 || nextPrio.tier === 4) {
+          setPlus4Remaining(0);
+          endTurn(
+            nextBoard,
+            currentCard,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            nextExiled,
+            undefined,
+            nextHistory
+          );
+        } else {
+          setPlus4Remaining(rem);
+        }
+      } else {
+        setPlus4Remaining(0);
+        endTurn(board, currentCard);
+      }
+    }
+  };
 
   useEffect(() => {
     if (
@@ -3012,374 +3532,43 @@ export default function App() {
     }
 
     botTimerRef.current = window.setTimeout(() => {
-      if (phase === 'DRAW_PHASE') {
-        sound.unlock();
-        let workingDeck = [...drawPile];
-        let workingDiscard = [...discardPile];
-        if (workingDeck.length === 0) {
-          if (workingDiscard.length === 0) {
-            workingDeck = createDeck();
-          } else {
-            workingDeck = shuffleCards(workingDiscard);
-            workingDiscard = [];
-            setDiscardPile([]);
-          }
-          sound.playShuffle();
-        }
-        const [drawn, ...rest] = workingDeck;
-        setDrawPile(rest);
-        setCurrentCard(drawn);
-        setCardFaceDown(true);
-        setPhase('CARD_REVEALING');
-        setBannerMsg(t('bannerDrawing', { name: playerLabel('p2') }));
-        sound.playDraw();
-        window.setTimeout(() => setCardFaceDown(false), 90);
-        window.setTimeout(() => resolveDrawnCard(drawn, rest, workingDiscard), 620);
-      } else if (phase === 'WILD_COLOR_CHOICE') {
-        handleSelectWildColor(chooseBotWildColor());
-      } else if (phase === 'WILD_PLACE_PIECE_PHASE') {
-        const squares = getWildPlacementSquares(board, activeFaction);
-        if (pendingWildPieceType && squares.length > 0) {
-          const dest = squares[Math.floor(Math.random() * squares.length)];
-          const nextBoard = cloneBoard(board);
-          nextBoard[dest.row][dest.col] = {
-            id: `wild-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            type: pendingWildPieceType,
-            faction: activeFaction,
-            pieceNumber: 1,
-            hasMoved: true,
-          };
-          sound.playSpecial();
-          setBoard(nextBoard);
-          setPendingWildPieceType(null);
-          setWildTeleportPending(true);
-
-          const pLetter =
-            pendingWildPieceType === 'queen'
-              ? 'Q'
-              : pendingWildPieceType === 'rook'
-              ? 'R'
-              : pendingWildPieceType === 'bishop'
-              ? 'B'
-              : pendingWildPieceType === 'knight'
-              ? 'N'
-              : 'P';
-          const destSq = coordToSq(dest);
-          setMoveHistory((prev) => [
-            ...prev,
-            {
-              ply: prev.length + 1,
-              turnNumber: turnsPlayed,
-              faction: activeFaction,
-              san: `+${pLetter}@${destSq}`,
-              comment: pieceLabel(pendingWildPieceType),
-              isChessMove: false,
-              cardColor: currentCard?.color ?? '',
-              cardValue: 'wild',
-              boardAfter: serializeBoardCompact(nextBoard),
-              toSq: destSq,
-            },
-          ]);
-
-          const step1Moves = getUnoChessLegalMoves(nextBoard, activeFaction, enPassantTarget, 1);
-          if (step1Moves.length > 0) {
-            setMovesRemaining(1);
-            setPhase('MOVE_PHASE');
-            setBannerMsg(t('bannerWildStep1'));
-          } else {
-            setMovesRemaining(0);
-            setPhase('WILD_TELEPORT_PHASE');
-            setBannerMsg(t('bannerWildStep2'));
-          }
-        } else {
-          setPendingWildPieceType(null);
-          setWildTeleportPending(true);
-          setMovesRemaining(1);
-          setPhase('MOVE_PHASE');
-        }
-      } else if (phase === 'WILD_PLUS4_CHOICE') {
-        handleSelectPlus4Mode(chooseBotPlus4Mode(board, enemyFaction));
-      } else if (phase === 'MOVE_PHASE') {
-        const syncColor: CardColor | null =
-          isFirstMoveOfTurn &&
-          currentCard &&
-          currentCard.value !== 'wild' &&
-          currentCard.value !== 'wild-draw'
-            ? currentCard.color
-            : null;
-        const botMove = chooseBotMove(
-          board,
-          activeFaction,
-          enPassantTarget,
-          movesRemaining,
-          botLevel,
-          syncColor
-        );
-        if (botMove) {
-          executeMove(botMove, 'queen', movesRemaining - 1);
-        } else {
-          endTurn(board, currentCard);
-        }
-      } else if (phase === 'WILD_TELEPORT_PHASE') {
-        const tp = chooseBotTeleport(board, activeFaction);
-        if (tp) {
-          const nextBoard = cloneBoard(board);
-          const p = nextBoard[tp.from.row][tp.from.col];
-          nextBoard[tp.from.row][tp.from.col] = null;
-          const promoRow = activeFaction === 'white' ? 0 : 7;
-          const autoType = p && p.type === 'pawn' && tp.to.row === promoRow ? 'queen' : p?.type;
-          nextBoard[tp.to.row][tp.to.col] = p
-            ? { ...p, type: autoType ?? p.type, hasMoved: true }
-            : null;
-          sound.playSpecial();
-          setBoard(nextBoard);
-          setWildTeleportPending(false);
-          const fromSq = coordToSq(tp.from);
-          const toSq = coordToSq(tp.to);
-          const nextHistory: MoveHistoryEntry[] = [
-            ...moveHistory,
-            {
-              ply: moveHistory.length + 1,
-              turnNumber: turnsPlayed,
-              faction: activeFaction,
-              san: `⚡${fromSq}→${toSq}`,
-              comment: t('teleportActive'),
-              isChessMove: false,
-              cardColor: currentCard?.color ?? '',
-              cardValue: currentCard?.value ?? 'wild',
-              boardAfter: serializeBoardCompact(nextBoard),
-              fromSq,
-              toSq,
-            },
-          ];
-          setMoveHistory(nextHistory);
-          endTurn(
-            nextBoard,
-            currentCard,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            undefined,
-            nextHistory
-          );
-        } else {
-          setWildTeleportPending(false);
-          endTurn(board, currentCard);
-        }
-      } else if (phase === 'PLUS2_RECOVER_PHASE') {
-        const empties = getEmptyHomeRows(board, activeFaction);
-        const recovered = ownCapturedPieces[0];
-        if (recovered && empties.length > 0) {
-          const dest = empties[Math.floor(Math.random() * empties.length)];
-          const nextBoard = cloneBoard(board);
-          nextBoard[dest.row][dest.col] = { ...recovered, hasMoved: true };
-          sound.playSpecial();
-          setBoard(nextBoard);
-          let nextCapW = capturedWhitePieces;
-          let nextCapB = capturedBlackPieces;
-          if (activeFaction === 'white') {
-            nextCapW = capturedWhitePieces.filter((p) => p.id !== recovered.id);
-            setCapturedWhitePieces(nextCapW);
-          } else {
-            nextCapB = capturedBlackPieces.filter((p) => p.id !== recovered.id);
-            setCapturedBlackPieces(nextCapB);
-          }
-          const destSq = coordToSq(dest);
-          const nextHistory: MoveHistoryEntry[] = [
-            ...moveHistory,
-            {
-              ply: moveHistory.length + 1,
-              turnNumber: turnsPlayed,
-              faction: activeFaction,
-              san: `+2↑${destSq}`,
-              comment: pieceLabel(recovered.type),
-              isChessMove: false,
-              cardColor: currentCard?.color ?? '',
-              cardValue: 'draw2',
-              boardAfter: serializeBoardCompact(nextBoard),
-              toSq: destSq,
-            },
-          ];
-          setMoveHistory(nextHistory);
-          const rem = plus2Remaining - 1;
-          if (rem <= 0 || empties.length <= 1 || ownCapturedPieces.length <= 1) {
-            setPlus2Remaining(0);
-            endTurn(
-              nextBoard,
-              currentCard,
-              undefined,
-              undefined,
-              nextCapW,
-              nextCapB,
-              undefined,
-              undefined,
-              nextHistory
-            );
-          } else {
-            setPlus2Remaining(rem);
-          }
-        } else {
-          setPlus2Remaining(0);
-          endTurn(board, currentCard);
-        }
-      } else if (phase === 'PLUS2_STEAL_PHASE') {
-        const prio = getHighestPriorityEnemyCoords(board, enemyFaction);
-        const empties = getEmptyHomeRows(board, activeFaction);
-        if (prio.coords.length > 0 && empties.length > 0 && prio.tier !== 4) {
-          const targetCoord = prio.coords[0];
-          const dest = empties[Math.floor(Math.random() * empties.length)];
-          const stolen = board[targetCoord.row][targetCoord.col];
-          if (stolen) {
-            const nextBoard = cloneBoard(board);
-            nextBoard[targetCoord.row][targetCoord.col] = null;
-            nextBoard[dest.row][dest.col] = {
-              ...stolen,
-              faction: activeFaction,
-              hasMoved: true,
-            };
-            sound.playCapture();
-            setBoard(nextBoard);
-            const fromSq = coordToSq(targetCoord);
-            const toSq = coordToSq(dest);
-            const nextHistory: MoveHistoryEntry[] = [
-              ...moveHistory,
-              {
-                ply: moveHistory.length + 1,
-                turnNumber: turnsPlayed,
-                faction: activeFaction,
-                san: `+2⇄${fromSq}→${toSq}`,
-                comment: pieceLabel(stolen.type),
-                isChessMove: false,
-                cardColor: currentCard?.color ?? '',
-                cardValue: 'draw2',
-                boardAfter: serializeBoardCompact(nextBoard),
-                fromSq,
-                toSq,
-              },
-            ];
-            setMoveHistory(nextHistory);
-            const wasTier3 = stolen.type === 'rook' || stolen.type === 'queen';
-            const rem = wasTier3 ? 0 : plus2Remaining - 1;
-            const nextPrio = getHighestPriorityEnemyCoords(nextBoard, enemyFaction);
-            if (rem <= 0 || nextPrio.tier === 4 || empties.length <= 1) {
-              setPlus2Remaining(0);
-              endTurn(
-                nextBoard,
-                currentCard,
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                undefined,
-                nextHistory
-              );
-            } else {
-              setPlus2Remaining(nextPrio.tier === 3 ? 1 : rem);
-            }
-            return;
-          }
-        }
-        setPlus2Remaining(0);
-        endTurn(board, currentCard);
-      } else if (phase === 'PLUS4_ELIMINATE_PHASE') {
-        const prio = getHighestPriorityEnemyCoords(board, enemyFaction);
-        if (prio.coords.length > 0 && prio.tier !== 4) {
-          const targetCoord = prio.coords[0];
-          const victim = board[targetCoord.row][targetCoord.col];
-          const nextBoard = cloneBoard(board);
-          nextBoard[targetCoord.row][targetCoord.col] = null;
-          sound.playCapture();
-          setBoard(nextBoard);
-          const nextExiled = victim ? [...exiledPieces, victim] : exiledPieces;
-          if (victim) setExiledPieces(nextExiled);
-          const targetSq = coordToSq(targetCoord);
-          const nextHistory: MoveHistoryEntry[] = [
-            ...moveHistory,
-            {
-              ply: moveHistory.length + 1,
-              turnNumber: turnsPlayed,
-              faction: activeFaction,
-              san: `+4✕${targetSq}`,
-              comment: victim ? pieceLabel(victim.type) : '',
-              isChessMove: false,
-              cardColor: '',
-              cardValue: 'wild-draw',
-              boardAfter: serializeBoardCompact(nextBoard),
-              toSq: targetSq,
-            },
-          ];
-          setMoveHistory(nextHistory);
-          const rem = plus4Remaining - 1;
-          const nextPrio = getHighestPriorityEnemyCoords(nextBoard, enemyFaction);
-          if (rem <= 0 || nextPrio.tier === 4) {
-            setPlus4Remaining(0);
-            endTurn(
-              nextBoard,
-              currentCard,
-              undefined,
-              undefined,
-              undefined,
-              undefined,
-              nextExiled,
-              undefined,
-              nextHistory
-            );
-          } else {
-            setPlus4Remaining(rem);
-          }
-        } else {
-          setPlus4Remaining(0);
-          endTurn(board, currentCard);
-        }
-      }
+      runBotStepRef.current();
     }, 650);
 
     return () => {
       if (botTimerRef.current !== null) {
         clearTimeout(botTimerRef.current);
+        botTimerRef.current = null;
       }
     };
   }, [
-    activeFaction,
     activePlayer,
-    board,
-    botLevel,
-    capturedBlackPieces,
-    capturedWhitePieces,
-    currentCard,
-    discardPile,
-    drawPile,
-    enPassantTarget,
-    endTurn,
-    enemyFaction,
-    executeMove,
-    exiledPieces,
-    handleSelectPlus4Mode,
-    handleSelectWildColor,
-    isFirstMoveOfTurn,
     isPaused,
     mode,
-    moveHistory,
     movesRemaining,
-    ownCapturedPieces,
     pendingWildPieceType,
     phase,
-    pieceLabel,
-    playerLabel,
     plus2Remaining,
     plus4Remaining,
-    resolveDrawnCard,
-    t,
-    turnsPlayed,
   ]);
 
   const enemyHasAttackTargets = useMemo(() => {
     const prio = getHighestPriorityEnemyCoords(board, enemyFaction);
     return prio.tier <= 3;
   }, [board, enemyFaction]);
+
+  const lastBoardMove = useMemo(() => {
+    const last = moveHistory[moveHistory.length - 1];
+    if (!last) return null;
+    const from = sqToCoord(last.fromSq);
+    const to = sqToCoord(last.toSq);
+    if (!from && !to) return null;
+    return { from, to };
+  }, [moveHistory]);
+
+  const isMyActiveTurn =
+    (mode === 'bot' && activePlayer === 'p1') ||
+    (mode === 'online' && activePlayer === myOnlineRole);
 
   const topFaction: Faction = boardFlipped ? 'white' : 'black';
   const bottomFaction: Faction = boardFlipped ? 'black' : 'white';
@@ -3543,6 +3732,7 @@ export default function App() {
             profileLoading={profileLoading}
             pendingJoinMatchId={pendingJoinMatchId}
             historyCount={savedMatchHistory.length}
+            systemConfig={systemModerationConfig}
             onClearPendingJoin={handleClearPendingJoin}
             onProfileSaved={handleProfileSaved}
             onSwitchAccount={handleSwitchAccount}
@@ -3550,6 +3740,15 @@ export default function App() {
             onOpenHistory={() => {
               void refreshMatchHistory();
               setIsProfileHistoryOpen(true);
+            }}
+            onOpenReport={() => openReportModal({ category: 'behavior' })}
+            onOpenAppeals={() => {
+              sound.playClick();
+              setIsAppealsOpen(true);
+            }}
+            onOpenModeration={() => {
+              sound.playClick();
+              setIsModConsoleOpen(true);
             }}
             onBack={handleLobbyBack}
           />
@@ -3597,19 +3796,28 @@ export default function App() {
               sound.playClick();
               setIsGuideOpen(true);
             }}
+            onOpenReport={() => openReportModal({ category: 'bug' })}
+            onOpenAppeals={() => {
+              sound.playClick();
+              setIsAppealsOpen(true);
+            }}
+            onOpenModeration={() => {
+              sound.playClick();
+              setIsModConsoleOpen(true);
+            }}
           />
         ) : (
           <div className="flex min-h-[100dvh] flex-col justify-between px-2.5 pb-2.5 pt-2 sm:px-3">
-            {/* 1. Top Game Header & Fixed Pause Button */}
-            <header className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
+            {/* 1. Top Game Header & Chat / Report / Pause Buttons */}
+            <header className="flex items-center justify-between gap-1.5">
+              <div className="flex items-center gap-1.5">
                 <img
                   src="/assets/logo.png"
                   alt="UnoChess"
                   referrerPolicy="no-referrer"
                   className="h-9 w-auto drop-shadow-md sm:h-10"
                 />
-                <div className="flex items-center gap-1 rounded-xl border-2 border-slate-950 bg-slate-900/85 px-2.5 py-1 text-xs font-bold text-amber-200 shadow tabular-nums">
+                <div className="flex items-center gap-1 rounded-xl border-2 border-slate-950 bg-slate-900/85 px-2 py-1 text-xs font-bold text-amber-200 shadow tabular-nums">
                   <Timer className="h-3.5 w-3.5 text-amber-400" />
                   <span>
                     {timeControl.minutes > 0
@@ -3620,29 +3828,86 @@ export default function App() {
               </div>
 
               <div
-                className={`flex items-center gap-1.5 rounded-xl border-2 border-slate-950 px-3 py-1 text-xs font-extrabold shadow ${
-                  activeFaction === 'white'
-                    ? 'bg-amber-100 text-slate-950'
-                    : 'bg-slate-800 text-white'
+                className={`flex items-center gap-1.5 rounded-xl border-2 px-2.5 py-1 text-xs font-extrabold shadow transition-colors ${
+                  isMyActiveTurn
+                    ? 'border-emerald-300 bg-emerald-400 text-slate-950'
+                    : activeFaction === 'white'
+                    ? 'border-slate-950 bg-amber-100 text-slate-950'
+                    : 'border-amber-400/70 bg-slate-800 text-amber-200'
                 }`}
               >
-                <span className="max-w-[130px] truncate">
-                  {playerLabel(activePlayer)} ·{' '}
-                  {activeFaction === 'white' ? t('whitePieces') : t('blackPieces')}
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full animate-pulse ${
+                    isMyActiveTurn
+                      ? 'bg-slate-950'
+                      : activeFaction === 'white'
+                      ? 'bg-emerald-600'
+                      : 'bg-amber-400'
+                  }`}
+                />
+                <span className="max-w-[125px] truncate sm:max-w-[160px]">
+                  {isMyActiveTurn
+                    ? t('yourTurnBadge')
+                    : t('turnOfLabel', { name: playerLabel(activePlayer) })}{' '}
+                  · {activeFaction === 'white' ? t('whitePieces') : t('blackPieces')}
                 </span>
               </div>
 
-              <button
-                type="button"
-                onClick={() => {
-                  sound.playClick();
-                  setIsPaused(true);
-                }}
-                aria-label={t('pauseTitle')}
-                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border-3 border-slate-950 bg-amber-400 text-slate-950 shadow-[0_3px_0_#0f172a] transition hover:brightness-105 active:translate-y-0.5 active:shadow-none"
-              >
-                <Pause className="h-5 w-5 fill-current" />
-              </button>
+              <div className="flex shrink-0 items-center gap-1.5">
+                {mode === 'online' && onlineMatch && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      sound.playClick();
+                      setIsChatOpen(true);
+                    }}
+                    aria-label={t('chatBtn')}
+                    title={t('chatBtn')}
+                    className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border-2 border-slate-950 bg-sky-400 text-slate-950 shadow-[0_3px_0_#0f172a] transition hover:brightness-105 active:translate-y-0.5 active:shadow-none"
+                  >
+                    <MessageSquare className="h-4 w-4" />
+                    {unreadChatCount > 0 && (
+                      <span className="absolute -right-1 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full border border-slate-950 bg-rose-500 px-1 text-[9px] font-extrabold text-white tabular-nums">
+                        {unreadChatCount}
+                      </span>
+                    )}
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const oppPid: PlayerId = myOnlineRole === 'p1' ? 'p2' : 'p1';
+                    openReportModal(
+                      mode === 'online' && onlineMatch
+                        ? {
+                            category: 'behavior',
+                            targetUid: playerUidForId(oppPid),
+                            targetNickname: playerLabel(oppPid),
+                            matchId: onlineMatch.id,
+                          }
+                        : { category: 'bug' }
+                    );
+                  }}
+                  aria-label={t('reportBtn')}
+                  title={t('reportBtn')}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border-2 border-slate-950 bg-slate-800 text-rose-300 shadow-[0_3px_0_#0f172a] transition hover:border-rose-400 active:translate-y-0.5 active:shadow-none"
+                >
+                  <Flag className="h-4 w-4" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    sound.playClick();
+                    setIsPaused(true);
+                  }}
+                  aria-label={t('pauseTitle')}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border-3 border-slate-950 bg-amber-400 text-slate-950 shadow-[0_3px_0_#0f172a] transition hover:brightness-105 active:translate-y-0.5 active:shadow-none"
+                >
+                  <Pause className="h-4 w-4 fill-current" />
+                </button>
+              </div>
             </header>
 
             {onlineSyncWarning && (
@@ -3723,9 +3988,11 @@ export default function App() {
 
             {/* 2. Top Player / Opponent Strip */}
             <div
-              className={`mt-1.5 flex items-center justify-between rounded-2xl border-2 border-slate-950 bg-slate-900/85 px-3 py-1.5 text-xs shadow-md backdrop-blur-sm ${
-                isTabletopTopTurn ? 'rotate-180' : ''
-              }`}
+              className={`mt-1.5 flex items-center justify-between rounded-2xl border-2 px-3 py-1.5 text-xs shadow-md backdrop-blur-sm transition-all ${
+                activePlayer === topPlayerId
+                  ? 'border-amber-400 bg-slate-900/95 ring-2 ring-amber-400/45 shadow-[0_0_14px_rgba(251,191,36,0.28)]'
+                  : 'border-slate-900 bg-slate-900/75 opacity-80'
+              } ${isTabletopTopTurn ? 'rotate-180' : ''}`}
             >
               <div className="flex min-w-0 items-center gap-1.5">
                 <span
@@ -3738,6 +4005,22 @@ export default function App() {
                 <span className="truncate font-extrabold text-white">
                   {playerLabel(topPlayerId)}
                 </span>
+                {activePlayer === topPlayerId && (
+                  <span
+                    className={`inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-extrabold ${
+                      (mode === 'online' && topPlayerId === myOnlineRole) ||
+                      (mode === 'bot' && topPlayerId === 'p1')
+                        ? 'bg-emerald-400 text-slate-950'
+                        : 'bg-amber-300 text-slate-950'
+                    }`}
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-slate-950 animate-pulse" />
+                    {(mode === 'online' && topPlayerId === myOnlineRole) ||
+                    (mode === 'bot' && topPlayerId === 'p1')
+                      ? t('yourTurnBadge')
+                      : t('activeTurnBadge')}
+                  </span>
+                )}
                 {topElo !== null && (
                   <span className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-extrabold text-amber-300 tabular-nums">
                     <Trophy className="h-2.5 w-2.5" />
@@ -3798,6 +4081,7 @@ export default function App() {
               highlightCoords={highlightCoords}
               highlightMode={highlightMode}
               checkedFaction={checkedFaction}
+              lastMove={lastBoardMove}
               disabled={
                 !isHumanTurn ||
                 (isPaused && mode !== 'online') ||
@@ -3808,7 +4092,13 @@ export default function App() {
             />
 
             {/* 5. Bottom Player Strip */}
-            <div className="mt-1.5 rounded-2xl border-2 border-slate-950 bg-slate-900/85 px-3 py-1.5 shadow-md backdrop-blur-sm">
+            <div
+              className={`mt-1.5 rounded-2xl border-2 px-3 py-1.5 shadow-md backdrop-blur-sm transition-all ${
+                activePlayer === bottomPlayerId
+                  ? 'border-amber-400 bg-slate-900/95 ring-2 ring-amber-400/45 shadow-[0_0_14px_rgba(251,191,36,0.28)]'
+                  : 'border-slate-900 bg-slate-900/75 opacity-80'
+              }`}
+            >
               <div className="flex items-center justify-between text-xs">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span
@@ -3821,6 +4111,22 @@ export default function App() {
                   <span className="truncate font-extrabold text-white">
                     {playerLabel(bottomPlayerId)}
                   </span>
+                  {activePlayer === bottomPlayerId && (
+                    <span
+                      className={`inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-extrabold ${
+                        (mode === 'online' && bottomPlayerId === myOnlineRole) ||
+                        (mode === 'bot' && bottomPlayerId === 'p1')
+                          ? 'bg-emerald-400 text-slate-950'
+                          : 'bg-amber-300 text-slate-950'
+                      }`}
+                    >
+                      <span className="h-1.5 w-1.5 rounded-full bg-slate-950 animate-pulse" />
+                      {(mode === 'online' && bottomPlayerId === myOnlineRole) ||
+                      (mode === 'bot' && bottomPlayerId === 'p1')
+                        ? t('yourTurnBadge')
+                        : t('activeTurnBadge')}
+                    </span>
+                  )}
                   {bottomElo !== null && (
                     <span className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-extrabold text-amber-300 tabular-nums">
                       <Trophy className="h-2.5 w-2.5" />
@@ -4008,6 +4314,52 @@ export default function App() {
         onClose={() => {
           setReplayRecord(null);
         }}
+      />
+
+      <MatchChatModal
+        isOpen={isChatOpen}
+        matchId={onlineMatchId}
+        profile={myProfile}
+        opponentName={playerLabel(myOnlineRole === 'p1' ? 'p2' : 'p1')}
+        messages={chatMessages}
+        systemConfig={systemModerationConfig}
+        onClose={() => setIsChatOpen(false)}
+        onReportMessage={(msg) => {
+          setIsChatOpen(false);
+          openReportModal({
+            category: 'chat',
+            targetUid: msg.senderUid,
+            targetNickname: msg.senderNickname,
+            matchId: msg.matchId,
+            messageId: msg.id,
+            messageExcerpt: msg.text,
+          });
+        }}
+        onOpenAppeals={() => setIsAppealsOpen(true)}
+      />
+
+      <ReportModal
+        isOpen={isReportOpen}
+        profile={myProfile}
+        prefill={reportContext}
+        onClose={() => setIsReportOpen(false)}
+        onOpenLobbyForAccount={() => {
+          setMode('online');
+          setShowOnlineLobby(true);
+        }}
+      />
+
+      <AppealsModal
+        isOpen={isAppealsOpen}
+        profile={myProfile}
+        onClose={() => setIsAppealsOpen(false)}
+      />
+
+      <ModerationConsoleModal
+        isOpen={isModConsoleOpen}
+        actor={myProfile}
+        systemConfig={systemModerationConfig}
+        onClose={() => setIsModConsoleOpen(false)}
       />
     </div>
   );

@@ -201,6 +201,8 @@ export interface LichessTimeControlElos {
   classical: number;
 }
 
+export type UserRole = 'user' | 'moderator' | 'founder';
+
 export interface PlayerProfile {
   uid: string;
   nickname: string;
@@ -212,6 +214,84 @@ export interface PlayerProfile {
   lichessElo: number;
   elos: TimeControlElos;
   lichessElos: LichessTimeControlElos;
+  role?: UserRole;
+  banned?: boolean;
+  suspendedUntilMs?: number;
+  chatMuted?: boolean;
+  mutedUntilMs?: number;
+  warningsCount?: number;
+  sanctionReason?: string;
+}
+
+export interface SystemModerationConfig {
+  founderUid: string;
+  founderNickname: string;
+  globalSlowModeSec: number;
+  wordFilterEnabled: boolean;
+  chatDisabledGlobally: boolean;
+  broadcastBanner: string;
+}
+
+export interface MatchChatMessage {
+  id: string;
+  matchId: string;
+  senderUid: string;
+  senderNickname: string;
+  senderRole: UserRole;
+  text: string;
+  kind: 'text' | 'system' | 'moderated';
+  deleted: boolean;
+  deletedBy: string;
+  flagged: boolean;
+  createdAtMs: number;
+}
+
+export type ReportCategory = 'behavior' | 'chat' | 'bug';
+export type ReportStatus = 'open' | 'in_review' | 'resolved' | 'dismissed';
+
+export interface ModerationReport {
+  id: string;
+  reporterUid: string;
+  reporterNickname: string;
+  category: ReportCategory;
+  targetUid: string;
+  targetNickname: string;
+  matchId: string;
+  messageId: string;
+  messageExcerpt: string;
+  description: string;
+  status: ReportStatus;
+  resolutionNote: string;
+  handledByUid: string;
+  handledByNickname: string;
+  createdAtMs: number;
+}
+
+export type AppealSanctionType = 'ban' | 'suspension' | 'mute' | 'warning' | 'other';
+export type AppealStatus = 'pending' | 'approved' | 'rejected';
+
+export interface ModerationAppeal {
+  id: string;
+  appellantUid: string;
+  appellantNickname: string;
+  sanctionType: AppealSanctionType;
+  reason: string;
+  status: AppealStatus;
+  reviewerUid: string;
+  reviewerNickname: string;
+  reviewerNote: string;
+  createdAtMs: number;
+}
+
+export interface ModerationLog {
+  id: string;
+  action: string;
+  actorUid: string;
+  actorNickname: string;
+  targetUid: string;
+  targetNickname: string;
+  details: string;
+  createdAtMs: number;
 }
 
 export function getTimeControlCategoryFromMinutes(minutes: number): TimeControlCategory {

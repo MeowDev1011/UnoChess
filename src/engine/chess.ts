@@ -728,7 +728,7 @@ export function chooseBotMove(
     }
   }
 
-  return bestMoves[Math.floor(Math.random() * bestMoves.length)];
+  return bestMoves[Math.floor(Math.random() * bestMoves.length)] ?? moves[0];
 }
 
 export function chooseBotPlus4Mode(board: (ChessPiece | null)[][], enemyFaction: Faction): 'attack' | 'action' {

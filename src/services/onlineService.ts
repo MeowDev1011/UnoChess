@@ -4,6 +4,7 @@ import {
   doc,
   getDoc,
   getDocFromServer,
+  getDocsFromServer,
   getFirestore,
   onSnapshot,
   query,
@@ -30,6 +31,7 @@ import {
   TimeControlCategory,
   TimeControlElos,
   TimeControlPreset,
+  UserRole,
   getProfileEloForCategory,
   getTimeControlCategoryFromMinutes,
 } from '../types/game';
@@ -46,6 +48,7 @@ const DEVICE_ACCOUNT_KEY = 'unochess_device_account_v1';
 const WAITING_MAGIC_KEY = 'unochess_waiting_magic_v1';
 const PENDING_CHALLENGE_KEY = 'unochess_waiting_challenge_v1';
 const ACTIVE_MATCH_KEY = 'unochess_active_online_match_v1';
+const PENDING_JOIN_SESSION_KEY = 'unochess_pending_join_v1';
 const SESSION_MAX_AGE_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 // Boot-time connection check
@@ -79,7 +82,7 @@ interface FirestoreErrorInfo {
   };
 }
 
-function clampElo(val: number): number {
+export function clampElo(val: number): number {
   return Math.max(100, Math.min(4000, Math.round(val)));
 }
 
@@ -87,7 +90,7 @@ function clampLichessRaw(val: number): number {
   return Math.max(0, Math.min(4000, Math.round(val)));
 }
 
-function buildDefaultElos(baseElo = 1200): TimeControlElos {
+export function buildDefaultElos(baseElo = 1200): TimeControlElos {
   const b = clampElo(baseElo);
   return {
     unlimited: b,
@@ -142,6 +145,14 @@ export function loadDeviceAccount(): PlayerProfile | null {
       lichessElo: Number(d.lichessElo ?? 0),
       elos: normalizeElos(d.elos, baseElo),
       lichessElos: normalizeLichessElos(d.lichessElos),
+      role:
+        d.role === 'founder' || d.role === 'moderator' ? d.role : 'user',
+      banned: Boolean(d.banned),
+      suspendedUntilMs: Number(d.suspendedUntilMs ?? 0),
+      chatMuted: Boolean(d.chatMuted),
+      mutedUntilMs: Number(d.mutedUntilMs ?? 0),
+      warningsCount: Number(d.warningsCount ?? 0),
+      sanctionReason: String(d.sanctionReason ?? ''),
     };
   } catch {
     return null;
@@ -223,7 +234,57 @@ export function loadActiveOnlineMatchId(uid: string): string | null {
   return loadUidScopedId(ACTIVE_MATCH_KEY, uid);
 }
 
-function buildFirestoreError(
+export function savePendingJoinId(matchId: string | null): void {
+  try {
+    if (!matchId) {
+      sessionStorage.removeItem(PENDING_JOIN_SESSION_KEY);
+      return;
+    }
+    sessionStorage.setItem(PENDING_JOIN_SESSION_KEY, matchId);
+  } catch {
+    // ignore sessionStorage failures
+  }
+}
+
+export function loadPendingJoinId(): string | null {
+  try {
+    const val = sessionStorage.getItem(PENDING_JOIN_SESSION_KEY);
+    return val && /^[a-zA-Z0-9_-]{3,128}$/.test(val) ? val : null;
+  } catch {
+    return null;
+  }
+}
+
+function isTransientFirestoreError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    msg.includes('aborted') ||
+    msg.includes('unavailable') ||
+    msg.includes('deadline-exceeded') ||
+    msg.includes('resource-exhausted') ||
+    msg.includes('internal') ||
+    msg.includes('network') ||
+    msg.includes('failed to fetch') ||
+    msg.includes('client is offline')
+  );
+}
+
+async function withTransientRetry<T>(fn: () => Promise<T>, maxRetries = 2): Promise<T> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt >= maxRetries || !isTransientFirestoreError(err)) {
+        throw err;
+      }
+      attempt += 1;
+      await new Promise((r) => setTimeout(r, 250 * attempt));
+    }
+  }
+}
+
+export function buildFirestoreError(
   error: unknown,
   operationType: OperationType,
   path: string | null
@@ -289,8 +350,87 @@ export function calculateEloDelta(winnerElo: number, loserElo: number): number {
   return Math.max(1, Math.min(100, delta));
 }
 
-function mapDocToProfile(d: Record<string, unknown>): PlayerProfile {
+export function normalizeUsernameKey(raw: string): string {
+  const cleaned = raw.trim().toLowerCase().replace(/[^a-z0-9_\-.]/g, '_');
+  return cleaned.slice(0, 20);
+}
+
+export function assertCanPlayOnline(profile: PlayerProfile): void {
+  if (profile.banned) {
+    throw new Error('PLAYER_BANNED');
+  }
+  if (typeof profile.suspendedUntilMs === 'number' && profile.suspendedUntilMs > Date.now()) {
+    throw new Error('PLAYER_SUSPENDED');
+  }
+}
+
+export async function syncUsernameIndex(uid: string, nickname: string): Promise<void> {
+  const key = normalizeUsernameKey(nickname);
+  if (key.length < 2 || !uid) return;
+  try {
+    await setDoc(doc(db, 'usernames', key), {
+      usernameKey: key,
+      uid,
+      nickname: nickname.trim().slice(0, 20),
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // Non-blocking secondary index update
+  }
+}
+
+export async function ensureFounderIfUnclaimed(
+  profile: PlayerProfile
+): Promise<PlayerProfile> {
+  const modRef = doc(db, 'system', 'moderation');
+  const playerRef = doc(db, 'players', profile.uid);
+  try {
+    const claimedRole = await runTransaction(db, async (tx): Promise<UserRole> => {
+      const modSnap = await tx.get(modRef);
+      if (!modSnap.exists()) {
+        const safeNick = profile.nickname.trim().slice(0, 20) || 'Founder';
+        tx.set(modRef, {
+          founderUid: profile.uid,
+          founderNickname: safeNick.length >= 2 ? safeNick : 'Founder',
+          globalSlowModeSec: 0,
+          wordFilterEnabled: true,
+          chatDisabledGlobally: false,
+          broadcastBanner: '',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        tx.update(playerRef, {
+          role: 'founder',
+          updatedAt: serverTimestamp(),
+        });
+        return 'founder';
+      }
+      const modData = modSnap.data();
+      if (modData.founderUid === profile.uid && profile.role !== 'founder') {
+        tx.update(playerRef, {
+          role: 'founder',
+          updatedAt: serverTimestamp(),
+        });
+        return 'founder';
+      }
+      return profile.role || 'user';
+    });
+    if (claimedRole !== profile.role) {
+      const next = { ...profile, role: claimedRole };
+      saveDeviceAccountLocally(next);
+      return next;
+    }
+    return profile;
+  } catch {
+    return profile;
+  }
+}
+
+export function mapDocToProfile(d: Record<string, unknown>): PlayerProfile {
   const baseElo = Number(d.elo ?? 1200);
+  const rawRole = d.role;
+  const role: UserRole =
+    rawRole === 'founder' || rawRole === 'moderator' ? rawRole : 'user';
   return {
     uid: String(d.uid),
     nickname: String(d.nickname).slice(0, 20),
@@ -302,6 +442,13 @@ function mapDocToProfile(d: Record<string, unknown>): PlayerProfile {
     lichessElo: Number(d.lichessElo ?? 0),
     elos: normalizeElos(d.elos, baseElo),
     lichessElos: normalizeLichessElos(d.lichessElos),
+    role,
+    banned: Boolean(d.banned),
+    suspendedUntilMs: Number(d.suspendedUntilMs ?? 0),
+    chatMuted: Boolean(d.chatMuted),
+    mutedUntilMs: Number(d.mutedUntilMs ?? 0),
+    warningsCount: Number(d.warningsCount ?? 0),
+    sanctionReason: String(d.sanctionReason ?? ''),
   };
 }
 
@@ -435,12 +582,22 @@ export async function syncDeviceAccountWithFirestore(
           rapid: 0,
           classical: 0,
         },
+        role: 'user',
+        banned: false,
+        suspendedUntilMs: 0,
+        chatMuted: false,
+        mutedUntilMs: 0,
+        warningsCount: 0,
+        sanctionReason: '',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-      synced = localProfile;
+      synced = { ...localProfile, role: 'user' };
       saveDeviceAccountLocally(synced);
     }
+
+    await syncUsernameIndex(synced.uid, synced.nickname);
+    synced = await ensureFounderIfUnclaimed(synced);
 
     if (synced.authType === 'lichess') {
       synced = await refreshLichessProfileIfLinked(synced);
@@ -490,7 +647,7 @@ export async function saveDevicePlayerAccount(
   try {
     const existing = await getDoc(ref);
     if (!existing.exists()) {
-      const created: PlayerProfile = {
+      let created: PlayerProfile = {
         uid,
         nickname,
         elo: 1200,
@@ -501,12 +658,21 @@ export async function saveDevicePlayerAccount(
         lichessElo: 0,
         elos: buildDefaultElos(1200),
         lichessElos: { bullet: 0, blitz: 0, rapid: 0, classical: 0 },
+        role: 'user',
+        banned: false,
+        suspendedUntilMs: 0,
+        chatMuted: false,
+        mutedUntilMs: 0,
+        warningsCount: 0,
+        sanctionReason: '',
       };
       await setDoc(ref, {
         ...created,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+      await syncUsernameIndex(uid, nickname);
+      created = await ensureFounderIfUnclaimed(created);
       saveDeviceAccountLocally(created);
       return created;
     } else {
@@ -514,10 +680,11 @@ export async function saveDevicePlayerAccount(
         nickname,
         updatedAt: serverTimestamp(),
       });
-      const updated = {
+      await syncUsernameIndex(uid, nickname);
+      const updated = await ensureFounderIfUnclaimed({
         ...mapDocToProfile(existing.data() as Record<string, unknown>),
         nickname,
-      };
+      });
       saveDeviceAccountLocally(updated);
       return updated;
     }
@@ -539,7 +706,7 @@ export async function loginWithLichessProfile(
   try {
     const existing = await getDoc(ref);
     if (!existing.exists()) {
-      const profile: PlayerProfile = {
+      let profile: PlayerProfile = {
         uid,
         nickname: nickname.length >= 2 ? nickname : `Li_${safeId}`.slice(0, 20),
         elo: clampedElo,
@@ -550,12 +717,21 @@ export async function loginWithLichessProfile(
         lichessElo: clampedElo,
         elos: lichess.elos,
         lichessElos: lichess.lichessElos,
+        role: 'user',
+        banned: false,
+        suspendedUntilMs: 0,
+        chatMuted: false,
+        mutedUntilMs: 0,
+        warningsCount: 0,
+        sanctionReason: '',
       };
       await setDoc(ref, {
         ...profile,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+      await syncUsernameIndex(uid, profile.nickname);
+      profile = await ensureFounderIfUnclaimed(profile);
       saveDeviceAccountLocally(profile);
       return profile;
     } else {
@@ -571,7 +747,8 @@ export async function loginWithLichessProfile(
         lichessElos: merged.lichessElos,
         updatedAt: serverTimestamp(),
       });
-      const updated: PlayerProfile = {
+      await syncUsernameIndex(uid, merged.nickname);
+      const updated = await ensureFounderIfUnclaimed({
         ...current,
         nickname: merged.nickname,
         elo: merged.elo,
@@ -580,7 +757,7 @@ export async function loginWithLichessProfile(
         lichessUsername: lichess.username.slice(0, 40),
         lichessElo: merged.lichessElo,
         lichessElos: merged.lichessElos,
-      };
+      });
       saveDeviceAccountLocally(updated);
       return updated;
     }
@@ -655,6 +832,21 @@ export async function getChallengeFromServer(
   }
 }
 
+export async function getOpenChallengesFromServer(): Promise<LobbyChallenge[]> {
+  try {
+    const q = query(collection(db, 'challenges'), where('status', '==', 'open'));
+    const snap = await getDocsFromServer(q);
+    const list: LobbyChallenge[] = [];
+    snap.forEach((docSnap) => {
+      list.push(mapDocToChallenge(docSnap.data() as Record<string, unknown>));
+    });
+    list.sort((a, b) => b.id.localeCompare(a.id));
+    return list;
+  } catch {
+    return [];
+  }
+}
+
 export function subscribeOpenChallenges(
   cb: (challenges: LobbyChallenge[]) => void,
   onError?: (err: Error) => void
@@ -681,7 +873,7 @@ export function subscribeOpenChallenges(
 export function subscribeMyMatchedChallenges(
   uid: string,
   cb: (matchedMatchId: string, challengeId: string) => void,
-  activeChallengeId?: string | null,
+  activeChallengeId?: string | null | (() => string | null),
   onError?: (err: Error) => void
 ): () => void {
   const path = 'challenges';
@@ -696,15 +888,16 @@ export function subscribeMyMatchedChallenges(
   return onSnapshot(
     q,
     (snap) => {
+      const currentActiveId =
+        typeof activeChallengeId === 'function' ? activeChallengeId() : activeChallengeId;
       if (!initialSnapshotHandled) {
         initialSnapshotHandled = true;
         snap.forEach((docSnap) => {
           const d = docSnap.data();
           if (d.status === 'matched') {
-            // If this is our active waiting challenge and it matched while reloading/away, enter immediately!
             if (
-              activeChallengeId &&
-              docSnap.id === activeChallengeId &&
+              currentActiveId &&
+              docSnap.id === currentActiveId &&
               typeof d.matchedMatchId === 'string' &&
               d.matchedMatchId
             ) {
@@ -744,26 +937,29 @@ export async function createLobbyChallenge(
   timeControl: TimeControlPreset,
   preferredColor: PreferredColor
 ): Promise<string> {
+  assertCanPlayOnline(profile);
   const id = generateSafeId('chl');
   const path = `challenges/${id}`;
-  const categoryElo = getProfileEloForCategory(profile, timeControl.category);
+  const categoryElo = clampElo(getProfileEloForCategory(profile, timeControl.category));
   try {
-    await setDoc(doc(db, 'challenges', id), {
-      id,
-      creatorUid: profile.uid,
-      creatorNickname: profile.nickname,
-      creatorElo: Math.round(categoryElo),
-      timeControlId: timeControl.id,
-      timeControlLabel: timeControl.label,
-      minutes: Math.round(timeControl.minutes),
-      increment: Math.round(timeControl.increment),
-      preferredColor,
-      status: 'open',
-      matchedMatchId: '',
-      opponentUid: '',
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+    await withTransientRetry(() =>
+      setDoc(doc(db, 'challenges', id), {
+        id,
+        creatorUid: profile.uid,
+        creatorNickname: ensureSafeNick(profile.nickname, 'Host'),
+        creatorElo: categoryElo,
+        timeControlId: timeControl.id.slice(0, 32),
+        timeControlLabel: timeControl.label.slice(0, 20),
+        minutes: Math.max(0, Math.min(180, Math.round(timeControl.minutes))),
+        increment: Math.max(0, Math.min(120, Math.round(timeControl.increment))),
+        preferredColor,
+        status: 'open',
+        matchedMatchId: '',
+        opponentUid: '',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      })
+    );
     return id;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
@@ -873,6 +1069,7 @@ export async function acceptLobbyChallenge(
   challenge: LobbyChallenge,
   accepter: PlayerProfile
 ): Promise<string> {
+  assertCanPlayOnline(accepter);
   const matchId = generateSafeId('mch');
   const matchRef = doc(db, 'matches', matchId);
   const challengeRef = doc(db, 'challenges', challenge.id);
@@ -886,39 +1083,53 @@ export async function acceptLobbyChallenge(
     status: 'active',
     hostUid: challenge.creatorUid,
     hostNickname: ensureSafeNick(challenge.creatorNickname, 'Host'),
-    hostElo: challenge.creatorElo,
+    hostElo: clampElo(challenge.creatorElo),
     guestUid: accepter.uid,
     guestNickname: ensureSafeNick(accepter.nickname, 'Guest'),
-    guestElo: accepterElo,
-    timeControlId: challenge.timeControlId,
-    timeControlLabel: challenge.timeControlLabel,
-    minutes: challenge.minutes,
-    increment: challenge.increment,
+    guestElo: clampElo(accepterElo),
+    timeControlId: challenge.timeControlId.slice(0, 32),
+    timeControlLabel: challenge.timeControlLabel.slice(0, 20),
+    minutes: Math.max(0, Math.min(180, Math.round(challenge.minutes))),
+    increment: Math.max(0, Math.min(120, Math.round(challenge.increment))),
     p1Faction,
   });
 
   try {
-    await runTransaction(db, async (tx) => {
-      const chSnap = await tx.get(challengeRef);
-      if (!chSnap.exists()) {
-        throw new Error('CHALLENGE_UNAVAILABLE');
-      }
-      const chData = chSnap.data();
-      if (chData.status !== 'open' || chData.creatorUid === accepter.uid) {
-        throw new Error('CHALLENGE_UNAVAILABLE');
-      }
-      tx.set(matchRef, matchPayload);
-      tx.update(challengeRef, {
-        status: 'matched',
-        opponentUid: accepter.uid,
-        matchedMatchId: matchId,
-        updatedAt: serverTimestamp(),
-      });
-    });
+    await withTransientRetry(() =>
+      runTransaction(db, async (tx) => {
+        const chSnap = await tx.get(challengeRef);
+        if (!chSnap.exists()) {
+          throw new Error('CHALLENGE_UNAVAILABLE');
+        }
+        const chData = chSnap.data();
+        if (chData.status !== 'open' || chData.creatorUid === accepter.uid) {
+          throw new Error('CHALLENGE_UNAVAILABLE');
+        }
+        tx.set(matchRef, matchPayload);
+        tx.update(challengeRef, {
+          status: 'matched',
+          opponentUid: accepter.uid,
+          matchedMatchId: matchId,
+          updatedAt: serverTimestamp(),
+        });
+      })
+    );
     return matchId;
   } catch (error) {
     if (error instanceof Error && error.message === 'CHALLENGE_UNAVAILABLE') {
       throw error;
+    }
+    // If another player committed an accept concurrently, Firestore rules reject the stale commit;
+    // verify current server status so the UI shows CHALLENGE_UNAVAILABLE instead of a generic error.
+    try {
+      const latestSnap = await getDocFromServer(challengeRef);
+      if (!latestSnap.exists() || latestSnap.data()?.status !== 'open') {
+        throw new Error('CHALLENGE_UNAVAILABLE');
+      }
+    } catch (recheckErr) {
+      if (recheckErr instanceof Error && recheckErr.message === 'CHALLENGE_UNAVAILABLE') {
+        throw recheckErr;
+      }
     }
     handleFirestoreError(error, OperationType.WRITE, `matches/${matchId}`);
   }
@@ -929,10 +1140,11 @@ export async function createMagicLinkMatch(
   timeControl: TimeControlPreset,
   preferredColor: PreferredColor
 ): Promise<string> {
+  assertCanPlayOnline(host);
   const matchId = generateSafeId('mlk');
   const path = `matches/${matchId}`;
   const p1Faction = resolveP1Faction(preferredColor);
-  const hostCatElo = getProfileEloForCategory(host, timeControl.category);
+  const hostCatElo = clampElo(getProfileEloForCategory(host, timeControl.category));
 
   const payload = buildInitialMatchPayload({
     matchId,
@@ -944,15 +1156,15 @@ export async function createMagicLinkMatch(
     guestUid: '',
     guestNickname: '',
     guestElo: 0,
-    timeControlId: timeControl.id,
-    timeControlLabel: timeControl.label,
-    minutes: timeControl.minutes,
-    increment: timeControl.increment,
+    timeControlId: timeControl.id.slice(0, 32),
+    timeControlLabel: timeControl.label.slice(0, 20),
+    minutes: Math.max(0, Math.min(180, Math.round(timeControl.minutes))),
+    increment: Math.max(0, Math.min(120, Math.round(timeControl.increment))),
     p1Faction,
   });
 
   try {
-    await setDoc(doc(db, 'matches', matchId), payload);
+    await withTransientRetry(() => setDoc(doc(db, 'matches', matchId), payload));
     return matchId;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
@@ -963,68 +1175,87 @@ export type JoinMagicLinkResult =
   | { status: 'joined'; match: OnlineMatchDoc }
   | { status: 'already_in'; match: OnlineMatchDoc }
   | { status: 'self_waiting'; match: OnlineMatchDoc }
-  | { status: 'unavailable' };
+  | { status: 'already_started' }
+  | { status: 'expired' };
 
 export async function joinMagicLinkMatch(
   matchId: string,
   guest: PlayerProfile
 ): Promise<JoinMagicLinkResult> {
+  assertCanPlayOnline(guest);
   const path = `matches/${matchId}`;
   const ref = doc(db, 'matches', matchId);
   try {
-    const result = await runTransaction(db, async (tx): Promise<JoinMagicLinkResult> => {
-      const snap = await tx.get(ref);
-      if (!snap.exists()) return { status: 'unavailable' };
-      const d = snap.data() as Record<string, unknown>;
-      const mapped = mapDocToOnlineMatch(d);
+    const result = await withTransientRetry(() =>
+      runTransaction(db, async (tx): Promise<JoinMagicLinkResult> => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return { status: 'expired' };
+        const d = snap.data() as Record<string, unknown>;
+        const mapped = mapDocToOnlineMatch(d);
 
-      if (mapped.status === 'finished') {
-        return { status: 'unavailable' };
-      }
-
-      if (mapped.hostUid === guest.uid) {
-        if (mapped.status === 'waiting') {
-          // Host opened their own link while still waiting for friend
-          return { status: 'self_waiting', match: mapped };
+        if (mapped.status === 'finished') {
+          return { status: 'expired' };
         }
-        return { status: 'already_in', match: mapped };
-      }
 
-      if (mapped.guestUid === guest.uid) {
-        return { status: 'already_in', match: mapped };
-      }
+        if (mapped.hostUid === guest.uid) {
+          if (mapped.status === 'waiting') {
+            return { status: 'self_waiting', match: mapped };
+          }
+          return { status: 'already_in', match: mapped };
+        }
 
-      if (mapped.status !== 'waiting' || mapped.inviteType !== 'magic_link') {
-        return { status: 'unavailable' };
-      }
+        if (mapped.guestUid === guest.uid) {
+          return { status: 'already_in', match: mapped };
+        }
 
-      const matchCategory = getTimeControlCategoryFromMinutes(mapped.minutes);
-      const guestCatElo = Math.round(getProfileEloForCategory(guest, matchCategory));
-      const safeGuestNick = ensureSafeNick(guest.nickname, 'Guest');
+        if (mapped.status === 'active') {
+          return { status: 'already_started' };
+        }
 
-      tx.update(ref, {
-        status: 'active',
-        guestUid: guest.uid,
-        guestNickname: safeGuestNick,
-        guestElo: guestCatElo,
-        p2Uid: guest.uid,
-        updatedAt: serverTimestamp(),
-      });
+        if (mapped.status !== 'waiting' || mapped.inviteType !== 'magic_link') {
+          return { status: 'expired' };
+        }
 
-      return {
-        status: 'joined',
-        match: {
-          ...mapped,
+        const matchCategory = getTimeControlCategoryFromMinutes(mapped.minutes);
+        const guestCatElo = clampElo(getProfileEloForCategory(guest, matchCategory));
+        const safeGuestNick = ensureSafeNick(guest.nickname, 'Guest');
+
+        tx.update(ref, {
           status: 'active',
           guestUid: guest.uid,
           guestNickname: safeGuestNick,
           guestElo: guestCatElo,
           p2Uid: guest.uid,
-        },
-      };
-    });
+          updatedAt: serverTimestamp(),
+        });
+
+        return {
+          status: 'joined',
+          match: {
+            ...mapped,
+            status: 'active',
+            guestUid: guest.uid,
+            guestNickname: safeGuestNick,
+            guestElo: guestCatElo,
+            p2Uid: guest.uid,
+          },
+        };
+      })
+    );
     return result;
   } catch (error) {
+    try {
+      const latestSnap = await getDocFromServer(ref);
+      if (!latestSnap.exists()) return { status: 'expired' };
+      const mapped = mapDocToOnlineMatch(latestSnap.data() as Record<string, unknown>);
+      if (mapped.status === 'finished') return { status: 'expired' };
+      if (mapped.guestUid === guest.uid || mapped.hostUid === guest.uid) {
+        return { status: 'already_in', match: mapped };
+      }
+      if (mapped.status === 'active') return { status: 'already_started' };
+    } catch {
+      // Fall through to structured error reporting if server recheck also fails
+    }
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
 }
@@ -1130,7 +1361,9 @@ export function subscribeMatch(
   );
 }
 
-export async function pushMatchUpdate(
+const matchWriteQueues = new Map<string, Promise<void>>();
+
+export function pushMatchUpdate(
   matchId: string,
   patch: Partial<Omit<OnlineMatchDoc, 'id' | 'inviteType' | 'hostUid' | 'p1Uid'>>
 ): Promise<void> {
@@ -1140,13 +1373,31 @@ export async function pushMatchUpdate(
     updatedAt: serverTimestamp(),
   };
   if (typeof cleanPatch.p1TimeMs === 'number') {
-    cleanPatch.p1TimeMs = Math.max(0, Math.round(cleanPatch.p1TimeMs));
+    cleanPatch.p1TimeMs = Math.max(0, Math.min(10800000, Math.round(cleanPatch.p1TimeMs)));
   }
   if (typeof cleanPatch.p2TimeMs === 'number') {
-    cleanPatch.p2TimeMs = Math.max(0, Math.round(cleanPatch.p2TimeMs));
+    cleanPatch.p2TimeMs = Math.max(0, Math.min(10800000, Math.round(cleanPatch.p2TimeMs)));
+  }
+  if (typeof cleanPatch.movesRemaining === 'number') {
+    cleanPatch.movesRemaining = Math.max(0, Math.min(20, Math.round(cleanPatch.movesRemaining)));
+  }
+  if (typeof cleanPatch.skipOpponentTurns === 'number') {
+    cleanPatch.skipOpponentTurns = Math.max(0, Math.min(10, Math.round(cleanPatch.skipOpponentTurns)));
+  }
+  if (typeof cleanPatch.plus2Remaining === 'number') {
+    cleanPatch.plus2Remaining = Math.max(0, Math.min(4, Math.round(cleanPatch.plus2Remaining)));
+  }
+  if (typeof cleanPatch.plus4Remaining === 'number') {
+    cleanPatch.plus4Remaining = Math.max(0, Math.min(4, Math.round(cleanPatch.plus4Remaining)));
   }
   if (typeof cleanPatch.eloDelta === 'number') {
-    cleanPatch.eloDelta = Math.max(0, Math.round(cleanPatch.eloDelta));
+    cleanPatch.eloDelta = Math.max(0, Math.min(200, Math.round(cleanPatch.eloDelta)));
+  }
+  if (typeof cleanPatch.bannerKey === 'string') {
+    cleanPatch.bannerKey = cleanPatch.bannerKey.slice(0, 80);
+  }
+  if (typeof cleanPatch.winReasonKey === 'string') {
+    cleanPatch.winReasonKey = cleanPatch.winReasonKey.slice(0, 80);
   }
   if (Array.isArray(cleanPatch.moveHistory)) {
     cleanPatch.moveHistory = cleanPatch.moveHistory.slice(-500).map((entry) => ({
@@ -1170,9 +1421,20 @@ export async function pushMatchUpdate(
   if (typeof cleanPatch.lastDuelText === 'string') {
     cleanPatch.lastDuelText = cleanPatch.lastDuelText.slice(0, 160);
   }
-  try {
-    await updateDoc(doc(db, 'matches', matchId), cleanPatch);
-  } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, path);
-  }
+
+  const prev = matchWriteQueues.get(matchId) ?? Promise.resolve();
+  const next = prev
+    .catch(() => {
+      // Keep write queue alive even if a previous write errored
+    })
+    .then(async () => {
+      try {
+        await withTransientRetry(() => updateDoc(doc(db, 'matches', matchId), cleanPatch));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, path);
+      }
+    });
+
+  matchWriteQueues.set(matchId, next);
+  return next;
 }

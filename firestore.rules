@@ -12,6 +12,10 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidUsernameKey(key) {
+      return key is string && key.size() >= 2 && key.size() <= 20 && key.matches('^[a-z0-9_\\-\\.]+$');
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -56,6 +60,8 @@ service cloud.firestore {
           'uid', 'nickname', 'elo', 'wins', 'losses',
           'authType', 'lichessUsername', 'lichessElo',
           'elos', 'lichessElos',
+          'role', 'banned', 'suspendedUntilMs',
+          'chatMuted', 'mutedUntilMs', 'warningsCount', 'sanctionReason',
           'createdAt', 'updatedAt'
         ])
         && isValidId(data.uid)
@@ -68,7 +74,45 @@ service cloud.firestore {
         && data.lichessElo is number && data.lichessElo >= 0 && data.lichessElo <= 4000
         && (!('elos' in data) || isValidEloMap(data.elos))
         && (!('lichessElos' in data) || isValidLichessEloMap(data.lichessElos))
+        && (!('role' in data) || data.role in ['user', 'moderator', 'founder'])
+        && (!('banned' in data) || data.banned is bool)
+        && (!('suspendedUntilMs' in data) || (data.suspendedUntilMs is number && data.suspendedUntilMs >= 0))
+        && (!('chatMuted' in data) || data.chatMuted is bool)
+        && (!('mutedUntilMs' in data) || (data.mutedUntilMs is number && data.mutedUntilMs >= 0))
+        && (!('warningsCount' in data) || (data.warningsCount is number && data.warningsCount >= 0 && data.warningsCount <= 1000))
+        && (!('sanctionReason' in data) || (data.sanctionReason is string && data.sanctionReason.size() <= 200))
         && isValidTimestamp(data.createdAt)
+        && isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidSystemModeration(data) {
+      return data.keys().hasAll([
+          'founderUid', 'founderNickname', 'globalSlowModeSec',
+          'wordFilterEnabled', 'chatDisabledGlobally', 'broadcastBanner',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'founderUid', 'founderNickname', 'globalSlowModeSec',
+          'wordFilterEnabled', 'chatDisabledGlobally', 'broadcastBanner',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.founderUid)
+        && data.founderNickname is string && data.founderNickname.size() >= 2 && data.founderNickname.size() <= 20
+        && data.globalSlowModeSec is number && data.globalSlowModeSec >= 0 && data.globalSlowModeSec <= 60
+        && data.wordFilterEnabled is bool
+        && data.chatDisabledGlobally is bool
+        && data.broadcastBanner is string && data.broadcastBanner.size() <= 200
+        && isValidTimestamp(data.createdAt)
+        && isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidUsernameDoc(data, key) {
+      return data.keys().hasAll(['usernameKey', 'uid', 'nickname', 'updatedAt'])
+        && data.keys().hasOnly(['usernameKey', 'uid', 'nickname', 'updatedAt'])
+        && data.usernameKey == key
+        && isValidUsernameKey(data.usernameKey)
+        && isValidId(data.uid)
+        && data.nickname is string && data.nickname.size() >= 2 && data.nickname.size() <= 20
         && isValidTimestamp(data.updatedAt);
     }
 
@@ -184,6 +228,108 @@ service cloud.firestore {
         && isValidTimestamp(data.updatedAt);
     }
 
+    function isValidChatMessage(data) {
+      return data.keys().hasAll([
+          'id', 'matchId', 'senderUid', 'senderNickname', 'senderRole',
+          'text', 'kind', 'deleted', 'deletedBy', 'flagged',
+          'createdAtMs', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'matchId', 'senderUid', 'senderNickname', 'senderRole',
+          'text', 'kind', 'deleted', 'deletedBy', 'flagged',
+          'createdAtMs', 'createdAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.matchId)
+        && isValidId(data.senderUid)
+        && data.senderNickname is string && data.senderNickname.size() >= 2 && data.senderNickname.size() <= 20
+        && data.senderRole in ['user', 'moderator', 'founder']
+        && data.text is string && data.text.size() >= 1 && data.text.size() <= 300
+        && data.kind in ['text', 'system', 'moderated']
+        && data.deleted is bool
+        && data.deletedBy is string && data.deletedBy.size() <= 128
+        && data.flagged is bool
+        && data.createdAtMs is number && data.createdAtMs >= 0
+        && isValidTimestamp(data.createdAt);
+    }
+
+    function isValidReport(data) {
+      return data.keys().hasAll([
+          'id', 'reporterUid', 'reporterNickname', 'category',
+          'targetUid', 'targetNickname', 'matchId', 'messageId',
+          'messageExcerpt', 'description', 'status', 'resolutionNote',
+          'handledByUid', 'handledByNickname', 'createdAtMs', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'reporterUid', 'reporterNickname', 'category',
+          'targetUid', 'targetNickname', 'matchId', 'messageId',
+          'messageExcerpt', 'description', 'status', 'resolutionNote',
+          'handledByUid', 'handledByNickname', 'createdAtMs', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.reporterUid)
+        && data.reporterNickname is string && data.reporterNickname.size() >= 2 && data.reporterNickname.size() <= 20
+        && data.category in ['behavior', 'chat', 'bug']
+        && data.targetUid is string && data.targetUid.size() <= 128
+        && data.targetNickname is string && data.targetNickname.size() <= 40
+        && data.matchId is string && data.matchId.size() <= 128
+        && data.messageId is string && data.messageId.size() <= 128
+        && data.messageExcerpt is string && data.messageExcerpt.size() <= 300
+        && data.description is string && data.description.size() >= 5 && data.description.size() <= 500
+        && data.status in ['open', 'in_review', 'resolved', 'dismissed']
+        && data.resolutionNote is string && data.resolutionNote.size() <= 300
+        && data.handledByUid is string && data.handledByUid.size() <= 128
+        && data.handledByNickname is string && data.handledByNickname.size() <= 40
+        && data.createdAtMs is number && data.createdAtMs >= 0
+        && isValidTimestamp(data.createdAt)
+        && isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidAppeal(data) {
+      return data.keys().hasAll([
+          'id', 'appellantUid', 'appellantNickname', 'sanctionType',
+          'reason', 'status', 'reviewerUid', 'reviewerNickname',
+          'reviewerNote', 'createdAtMs', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'appellantUid', 'appellantNickname', 'sanctionType',
+          'reason', 'status', 'reviewerUid', 'reviewerNickname',
+          'reviewerNote', 'createdAtMs', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && isValidId(data.appellantUid)
+        && data.appellantNickname is string && data.appellantNickname.size() >= 2 && data.appellantNickname.size() <= 20
+        && data.sanctionType in ['ban', 'suspension', 'mute', 'warning', 'other']
+        && data.reason is string && data.reason.size() >= 5 && data.reason.size() <= 500
+        && data.status in ['pending', 'approved', 'rejected']
+        && data.reviewerUid is string && data.reviewerUid.size() <= 128
+        && data.reviewerNickname is string && data.reviewerNickname.size() <= 40
+        && data.reviewerNote is string && data.reviewerNote.size() <= 300
+        && data.createdAtMs is number && data.createdAtMs >= 0
+        && isValidTimestamp(data.createdAt)
+        && isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidModerationLog(data) {
+      return data.keys().hasAll([
+          'id', 'action', 'actorUid', 'actorNickname',
+          'targetUid', 'targetNickname', 'details', 'createdAtMs', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'action', 'actorUid', 'actorNickname',
+          'targetUid', 'targetNickname', 'details', 'createdAtMs', 'createdAt'
+        ])
+        && isValidId(data.id)
+        && data.action is string && data.action.size() >= 2 && data.action.size() <= 64
+        && isValidId(data.actorUid)
+        && data.actorNickname is string && data.actorNickname.size() >= 2 && data.actorNickname.size() <= 20
+        && data.targetUid is string && data.targetUid.size() <= 128
+        && data.targetNickname is string && data.targetNickname.size() <= 40
+        && data.details is string && data.details.size() <= 300
+        && data.createdAtMs is number && data.createdAtMs >= 0
+        && isValidTimestamp(data.createdAt);
+    }
+
     function isValidMatchRecord(data) {
       return data.keys().hasAll([
           'id', 'ownerUid', 'mode', 'whiteName', 'blackName',
@@ -221,16 +367,66 @@ service cloud.firestore {
         && isValidTimestamp(data.updatedAt);
     }
 
+    // ---------- /system/{docId} ----------
+    match /system/{docId} {
+      allow get: if docId == 'moderation';
+      allow list: if false;
+
+      allow create: if docId == 'moderation'
+        && isValidSystemModeration(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if docId == 'moderation'
+        && isValidSystemModeration(incoming())
+        && incoming().founderUid == existing().founderUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'globalSlowModeSec', 'wordFilterEnabled', 'chatDisabledGlobally', 'broadcastBanner', 'updatedAt'
+        ]);
+
+      allow delete: if false;
+    }
+
+    // ---------- /usernames/{usernameKey} ----------
+    match /usernames/{usernameKey} {
+      allow get: if isValidUsernameKey(usernameKey);
+      allow list: if false;
+
+      allow create: if isValidUsernameKey(usernameKey)
+        && isValidUsernameDoc(incoming(), usernameKey)
+        && incoming().updatedAt == request.time
+        && existsAfter(/databases/$(database)/documents/players/$(incoming().uid));
+
+      allow update: if isValidUsernameKey(usernameKey)
+        && isValidUsernameDoc(incoming(), usernameKey)
+        && incoming().updatedAt == request.time
+        && exists(/databases/$(database)/documents/players/$(incoming().uid));
+
+      allow delete: if isValidUsernameKey(usernameKey);
+    }
+
     // ---------- /players/{uid} ----------
     match /players/{uid} {
       allow get: if isValidId(uid);
-      allow list: if false;
+      allow list: if existing().elo >= 100;
 
       allow create: if isValidId(uid)
         && isValidPlayer(incoming())
         && incoming().uid == uid
         && incoming().wins == 0
         && incoming().losses == 0
+        && (!('banned' in incoming()) || incoming().banned == false)
+        && (!('warningsCount' in incoming()) || incoming().warningsCount == 0)
+        && (
+          !('role' in incoming())
+          || incoming().role == 'user'
+          || (
+            incoming().role == 'founder'
+            && !exists(/databases/$(database)/documents/system/moderation)
+          )
+        )
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
 
@@ -244,6 +440,19 @@ service cloud.firestore {
           || incoming().diff(existing()).affectedKeys().hasOnly(['elo', 'elos', 'wins', 'losses', 'updatedAt'])
           || incoming().diff(existing()).affectedKeys().hasOnly([
             'nickname', 'elo', 'elos', 'authType', 'lichessUsername', 'lichessElo', 'lichessElos', 'updatedAt'
+          ])
+          || (
+            incoming().diff(existing()).affectedKeys().hasOnly(['role', 'updatedAt'])
+            && (!('role' in existing()) || existing().role != 'founder')
+            && (
+              incoming().role in ['user', 'moderator']
+              || (incoming().role == 'founder' && !exists(/databases/$(database)/documents/system/moderation))
+            )
+          )
+          || incoming().diff(existing()).affectedKeys().hasOnly([
+            'banned', 'suspendedUntilMs', 'chatMuted', 'mutedUntilMs',
+            'warningsCount', 'sanctionReason', 'elo', 'elos', 'wins', 'losses',
+            'nickname', 'updatedAt'
           ])
         );
 
@@ -301,7 +510,7 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          // Action: Creator cancels own open challenge
+          // Action: Creator or Moderator cancels open challenge
           (
             incoming().status == 'cancelled'
             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
@@ -335,7 +544,6 @@ service cloud.firestore {
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time
         && (
-          // Action: Host creates a waiting magic-link match
           (
             incoming().inviteType == 'magic_link'
             && incoming().status == 'waiting'
@@ -344,7 +552,6 @@ service cloud.firestore {
             && incoming().p2Uid == ''
           )
           ||
-          // Action: Challenger accepts a lobby challenge and creates an active match
           (
             incoming().inviteType == 'lobby'
             && incoming().status == 'active'
@@ -365,7 +572,6 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          // Action: Friend joins via magic link
           (
             existing().status == 'waiting'
             && existing().inviteType == 'magic_link'
@@ -379,7 +585,6 @@ service cloud.firestore {
             ])
           )
           ||
-          // Action: Host cancels waiting magic link
           (
             existing().status == 'waiting'
             && incoming().status == 'finished'
@@ -388,7 +593,6 @@ service cloud.firestore {
             ])
           )
           ||
-          // Action: Participant updates live match state or finishes match
           (
             existing().status == 'active'
             && incoming().guestUid == existing().guestUid
@@ -409,6 +613,106 @@ service cloud.firestore {
         );
 
       allow delete: if false;
+
+      // ---------- /matches/{matchId}/messages/{messageId} ----------
+      match /messages/{messageId} {
+        allow get: if isValidId(matchId) && isValidId(messageId)
+          && exists(/databases/$(database)/documents/matches/$(matchId));
+        allow list: if isValidId(matchId)
+          && existing().matchId == matchId;
+
+        allow create: if isValidId(matchId) && isValidId(messageId)
+          && exists(/databases/$(database)/documents/matches/$(matchId))
+          && isValidChatMessage(incoming())
+          && incoming().id == messageId
+          && incoming().matchId == matchId
+          && incoming().deleted == false
+          && incoming().createdAt == request.time;
+
+        allow update: if isValidId(matchId) && isValidId(messageId)
+          && exists(/databases/$(database)/documents/matches/$(matchId))
+          && isValidChatMessage(incoming())
+          && incoming().id == existing().id
+          && incoming().matchId == existing().matchId
+          && incoming().senderUid == existing().senderUid
+          && incoming().createdAt == existing().createdAt
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'text', 'kind', 'deleted', 'deletedBy', 'flagged'
+          ]);
+
+        allow delete: if false;
+      }
+    }
+
+    // ---------- /reports/{reportId} ----------
+    match /reports/{reportId} {
+      allow get: if isValidId(reportId);
+      allow list: if existing().status in ['open', 'in_review', 'resolved', 'dismissed'];
+
+      allow create: if isValidId(reportId)
+        && isValidReport(incoming())
+        && incoming().id == reportId
+        && incoming().status == 'open'
+        && incoming().handledByUid == ''
+        && incoming().resolutionNote == ''
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidId(reportId)
+        && isValidReport(incoming())
+        && incoming().id == existing().id
+        && incoming().reporterUid == existing().reporterUid
+        && incoming().category == existing().category
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'resolutionNote', 'handledByUid', 'handledByNickname', 'updatedAt'
+        ]);
+
+      allow delete: if false;
+    }
+
+    // ---------- /appeals/{appealId} ----------
+    match /appeals/{appealId} {
+      allow get: if isValidId(appealId);
+      allow list: if existing().status in ['pending', 'approved', 'rejected'];
+
+      allow create: if isValidId(appealId)
+        && isValidAppeal(incoming())
+        && incoming().id == appealId
+        && incoming().status == 'pending'
+        && incoming().reviewerUid == ''
+        && incoming().reviewerNote == ''
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidId(appealId)
+        && isValidAppeal(incoming())
+        && (existing().status == 'pending' || incoming().status == existing().status)
+        && incoming().id == existing().id
+        && incoming().appellantUid == existing().appellantUid
+        && incoming().sanctionType == existing().sanctionType
+        && incoming().reason == existing().reason
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'reviewerUid', 'reviewerNickname', 'reviewerNote', 'updatedAt'
+        ]);
+
+      allow delete: if false;
+    }
+
+    // ---------- /moderationLogs/{logId} ----------
+    match /moderationLogs/{logId} {
+      allow get: if isValidId(logId);
+      allow list: if existing().createdAtMs >= 0;
+
+      allow create: if isValidId(logId)
+        && isValidModerationLog(incoming())
+        && incoming().id == logId
+        && incoming().createdAt == request.time;
+
+      allow update, delete: if false;
     }
   }
 }
