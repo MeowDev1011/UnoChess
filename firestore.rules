@@ -39,6 +39,10 @@ service cloud.firestore {
         );
     }
 
+    function isCanonicalFounderUid(uid, data) {
+      return isGuaranteedModeratorUid(uid, data);
+    }
+
     // ---------- Validation Blueprints ----------
     function isValidEloMap(m) {
       return m is map
@@ -390,12 +394,23 @@ service cloud.firestore {
 
       allow update: if docId == 'moderation'
         && isValidSystemModeration(incoming())
-        && incoming().founderUid == existing().founderUid
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly([
-          'globalSlowModeSec', 'wordFilterEnabled', 'chatDisabledGlobally', 'broadcastBanner', 'updatedAt'
-        ]);
+        && (
+          (
+            incoming().founderUid == existing().founderUid
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'globalSlowModeSec', 'wordFilterEnabled', 'chatDisabledGlobally', 'broadcastBanner', 'updatedAt'
+            ])
+          )
+          || (
+            incoming().founderUid == 'lichess_gatochess89'
+            && incoming().founderNickname == 'GatoChess89'
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'founderUid', 'founderNickname', 'updatedAt'
+            ])
+          )
+        );
 
       allow delete: if false;
     }
@@ -435,19 +450,15 @@ service cloud.firestore {
         && (!('warningsCount' in incoming()) || incoming().warningsCount == 0)
         && (
           (
-            isGuaranteedModeratorUid(uid, incoming())
+            isCanonicalFounderUid(uid, incoming())
             && 'role' in incoming()
-            && incoming().role == 'moderator'
+            && incoming().role == 'founder'
           )
           || (
-            !isGuaranteedModeratorUid(uid, incoming())
+            !isCanonicalFounderUid(uid, incoming())
             && (
               !('role' in incoming())
               || incoming().role == 'user'
-              || (
-                incoming().role == 'founder'
-                && !exists(/databases/$(database)/documents/system/moderation)
-              )
             )
           )
         )
@@ -460,10 +471,10 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          !isGuaranteedModeratorUid(uid, existing())
+          !isCanonicalFounderUid(uid, existing())
           || (
             'role' in incoming()
-            && incoming().role in ['moderator', 'founder']
+            && incoming().role == 'founder'
           )
         )
         && (
@@ -476,17 +487,16 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly([
               'nickname', 'elo', 'elos', 'authType', 'lichessUsername', 'lichessElo', 'lichessElos', 'role', 'updatedAt'
             ])
-            && isGuaranteedModeratorUid(uid, incoming())
+            && isCanonicalFounderUid(uid, incoming())
             && 'role' in incoming()
-            && incoming().role == 'moderator'
+            && incoming().role == 'founder'
           )
           || (
             incoming().diff(existing()).affectedKeys().hasOnly(['role', 'updatedAt'])
             && (!('role' in existing()) || existing().role != 'founder')
-            && (!isGuaranteedModeratorUid(uid, existing()) || ('role' in incoming() && incoming().role == 'moderator'))
             && (
-              incoming().role in ['user', 'moderator']
-              || (incoming().role == 'founder' && !exists(/databases/$(database)/documents/system/moderation))
+              (isCanonicalFounderUid(uid, existing()) && incoming().role == 'founder')
+              || (!isCanonicalFounderUid(uid, existing()) && incoming().role in ['user', 'moderator'])
             )
           )
           || incoming().diff(existing()).affectedKeys().hasOnly([

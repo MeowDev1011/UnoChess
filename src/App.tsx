@@ -90,7 +90,10 @@ import {
   saveMatchRecord,
   updateSavedMatchReplayTree,
 } from './services/matchHistoryService';
-import { exchangeLichessCodeForProfile } from './services/lichessService';
+import {
+  LICHESS_AUTH_CHANNEL,
+  exchangeLichessCodeForProfile,
+} from './services/lichessService';
 import {
   fetchMatchChatFromServer,
   subscribeMatchChat,
@@ -348,6 +351,24 @@ export default function App() {
         const li = await exchangeLichessCodeForProfile(code, state);
         const prof = await loginWithLichessProfile(li);
         setMyProfile(prof);
+        try {
+          if (typeof BroadcastChannel !== 'undefined') {
+            const bc = new BroadcastChannel(LICHESS_AUTH_CHANNEL);
+            bc.postMessage({ type: 'LICHESS_PROFILE_READY', profile: prof });
+            bc.close();
+          }
+        } catch {
+          // ignore broadcast failure
+        }
+        if (window.name === 'unochess_lichess_oauth') {
+          setTimeout(() => {
+            try {
+              window.close();
+            } catch {
+              // keep usable inside window if browser blocks close
+            }
+          }, 150);
+        }
       } catch {
         // user can retry inside lobby
       } finally {

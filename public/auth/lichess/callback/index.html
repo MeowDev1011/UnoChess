@@ -57,6 +57,14 @@
           localStorage.setItem('unochess_lichess_cb', JSON.stringify(payload));
         } catch (e) {}
 
+        try {
+          if (typeof BroadcastChannel !== 'undefined') {
+            var bc = new BroadcastChannel('unochess_lichess_auth');
+            bc.postMessage(payload);
+            bc.close();
+          }
+        } catch (e) {}
+
         if (window.opener && !window.opener.closed) {
           try {
             window.opener.postMessage(payload, window.location.origin);
@@ -67,16 +75,39 @@
           }
           setTimeout(function () {
             window.close();
-          }, 180);
+          }, 320);
           return;
         }
 
-        // Same-tab fallback: redirect back to root with query parameters
-        var next = new URL('/', window.location.origin);
-        if (code) next.searchParams.set('lichess_code', code);
-        if (state) next.searchParams.set('lichess_state', state);
-        if (error) next.searchParams.set('lichess_error', error);
-        window.location.replace(next.toString());
+        function redirectBackSameTab() {
+          var next = new URL('/', window.location.origin);
+          if (code) next.searchParams.set('lichess_code', code);
+          if (state) next.searchParams.set('lichess_state', state);
+          if (error) next.searchParams.set('lichess_error', error);
+          window.location.replace(next.toString());
+        }
+
+        // If COOP severed window.opener inside our popup, wait briefly for main tab acknowledgment
+        if (window.name === 'unochess_lichess_oauth' && state) {
+          var checks = 0;
+          var timer = setInterval(function () {
+            checks++;
+            try {
+              if (localStorage.getItem('unochess_lichess_ack') === state) {
+                clearInterval(timer);
+                window.close();
+                return;
+              }
+            } catch (e) {}
+            if (checks >= 10) {
+              clearInterval(timer);
+              redirectBackSameTab();
+            }
+          }, 60);
+          return;
+        }
+
+        redirectBackSameTab();
       })();
     </script>
   </body>

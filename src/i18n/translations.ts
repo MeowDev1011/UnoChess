@@ -177,6 +177,7 @@ export interface TranslationDict {
   onlineNicknamePlaceholder: string;
   onlineNicknameSave: string;
   onlineNicknameInvalid: string;
+  onlineNicknameTaken: string;
   onlineEloLabel: string;
   onlineRecordLabel: string;
   onlineTabPublic: string;
@@ -555,6 +556,7 @@ const es: TranslationDict = {
   onlineNicknamePlaceholder: 'Ej. GranMaestro99',
   onlineNicknameSave: 'Guardar Usuario',
   onlineNicknameInvalid: 'El usuario debe tener entre 2 y 20 caracteres.',
+  onlineNicknameTaken: 'Ese usuario ya pertenece a otra cuenta.',
   onlineEloLabel: '{{elo}} Elo',
   onlineRecordLabel: '{{wins}}V · {{losses}}D',
   onlineTabPublic: 'Lobby Público',
@@ -933,6 +935,7 @@ const en: TranslationDict = {
   onlineNicknamePlaceholder: 'e.g. GrandMaster99',
   onlineNicknameSave: 'Save Username',
   onlineNicknameInvalid: 'Username must be between 2 and 20 characters.',
+  onlineNicknameTaken: 'That username already belongs to another account.',
   onlineEloLabel: '{{elo}} Elo',
   onlineRecordLabel: '{{wins}}W · {{losses}}L',
   onlineTabPublic: 'Public Lobby',

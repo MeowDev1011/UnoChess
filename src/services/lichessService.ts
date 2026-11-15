@@ -31,8 +31,13 @@ interface LichessAccountResponse {
 const LICHESS_PKCE_KEY = 'unochess_lichess_pkce_v1';
 const LICHESS_TOKEN_KEY = 'unochess_lichess_token_v1';
 export const LICHESS_CB_STORAGE_KEY = 'unochess_lichess_cb';
+export const LICHESS_ACK_STORAGE_KEY = 'unochess_lichess_ack';
+export const LICHESS_AUTH_CHANNEL = 'unochess_lichess_auth';
 const LICHESS_CLIENT_ID = 'unochess.pages.dev';
 const LICHESS_SCOPES = 'preference:read';
+
+const inFlightExchanges = new Map<string, Promise<LichessProfileResult>>();
+const completedExchanges = new Map<string, LichessProfileResult>();
 
 function clampElo(val: number): number {
   return Math.max(100, Math.min(4000, Math.round(val)));
@@ -186,59 +191,76 @@ export async function exchangeLichessCodeForProfile(
   code: string,
   returnedState: string
 ): Promise<LichessProfileResult> {
-  const raw = localStorage.getItem(LICHESS_PKCE_KEY);
-  if (!raw) {
-    throw new Error('Missing Lichess PKCE session');
-  }
-  const pkce = JSON.parse(raw) as LichessPkceState;
-  if (!pkce.verifier || pkce.state !== returnedState) {
-    throw new Error('Invalid Lichess OAuth state');
-  }
+  const dedupeKey = `${returnedState}:${code}`;
+  const cached = completedExchanges.get(dedupeKey);
+  if (cached) return cached;
 
-  localStorage.removeItem(LICHESS_PKCE_KEY);
-  localStorage.removeItem(LICHESS_CB_STORAGE_KEY);
+  const existingPromise = inFlightExchanges.get(dedupeKey);
+  if (existingPromise) return existingPromise;
 
-  const body = new URLSearchParams({
-    grant_type: 'authorization_code',
-    code,
-    code_verifier: pkce.verifier,
-    redirect_uri: pkce.redirectUri,
-    client_id: LICHESS_CLIENT_ID,
-  });
+  const promise = (async () => {
+    const raw = localStorage.getItem(LICHESS_PKCE_KEY);
+    if (!raw) {
+      throw new Error('Missing Lichess PKCE session');
+    }
+    const pkce = JSON.parse(raw) as LichessPkceState;
+    if (!pkce.verifier || pkce.state !== returnedState) {
+      throw new Error('Invalid Lichess OAuth state');
+    }
 
-  const tokenRes = await fetch('https://lichess.org/api/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  });
+    const body = new URLSearchParams({
+      grant_type: 'authorization_code',
+      code,
+      code_verifier: pkce.verifier,
+      redirect_uri: pkce.redirectUri,
+      client_id: LICHESS_CLIENT_ID,
+    });
 
-  if (!tokenRes.ok) {
-    throw new Error(`Lichess token exchange failed (${tokenRes.status})`);
-  }
+    const tokenRes = await fetch('https://lichess.org/api/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
 
-  const tokenJson = (await tokenRes.json()) as { access_token?: string };
-  if (!tokenJson.access_token) {
-    throw new Error('Missing access_token from Lichess');
-  }
+    if (!tokenRes.ok) {
+      throw new Error(`Lichess token exchange failed (${tokenRes.status})`);
+    }
 
+    const tokenJson = (await tokenRes.json()) as { access_token?: string };
+    if (!tokenJson.access_token) {
+      throw new Error('Missing access_token from Lichess');
+    }
+
+    try {
+      localStorage.removeItem(LICHESS_PKCE_KEY);
+      localStorage.removeItem(LICHESS_CB_STORAGE_KEY);
+      localStorage.setItem(LICHESS_TOKEN_KEY, tokenJson.access_token);
+    } catch {
+      // ignore storage errors
+    }
+
+    const accRes = await fetch('https://lichess.org/api/account', {
+      headers: {
+        Authorization: `Bearer ${tokenJson.access_token}`,
+      },
+    });
+
+    if (!accRes.ok) {
+      throw new Error(`Lichess account fetch failed (${accRes.status})`);
+    }
+
+    const account = (await accRes.json()) as LichessAccountResponse;
+    const result = mapLichessAccountToResult(account);
+    completedExchanges.set(dedupeKey, result);
+    return result;
+  })();
+
+  inFlightExchanges.set(dedupeKey, promise);
   try {
-    localStorage.setItem(LICHESS_TOKEN_KEY, tokenJson.access_token);
-  } catch {
-    // ignore storage errors
+    return await promise;
+  } finally {
+    inFlightExchanges.delete(dedupeKey);
   }
-
-  const accRes = await fetch('https://lichess.org/api/account', {
-    headers: {
-      Authorization: `Bearer ${tokenJson.access_token}`,
-    },
-  });
-
-  if (!accRes.ok) {
-    throw new Error(`Lichess account fetch failed (${accRes.status})`);
-  }
-
-  const account = (await accRes.json()) as LichessAccountResponse;
-  return mapLichessAccountToResult(account);
 }
 
 export async function fetchLatestLichessProfile(
@@ -246,6 +268,7 @@ export async function fetchLatestLichessProfile(
 ): Promise<LichessProfileResult | null> {
   const cleanUser = lichessUsernameOrId.trim();
   if (!cleanUser) return null;
+  const cleanLower = cleanUser.toLowerCase();
 
   try {
     const token = localStorage.getItem(LICHESS_TOKEN_KEY);
@@ -255,9 +278,13 @@ export async function fetchLatestLichessProfile(
       });
       if (accRes.ok) {
         const account = (await accRes.json()) as LichessAccountResponse;
-        return mapLichessAccountToResult(account);
-      }
-      if (accRes.status === 401) {
+        const accId = (account.id || '').trim().toLowerCase();
+        const accUser = (account.username || '').trim().toLowerCase();
+        // Guard against returning a different user's cached OAuth token
+        if (accId === cleanLower || accUser === cleanLower) {
+          return mapLichessAccountToResult(account);
+        }
+      } else if (accRes.status === 401) {
         localStorage.removeItem(LICHESS_TOKEN_KEY);
       }
     }

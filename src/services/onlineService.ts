@@ -44,7 +44,7 @@ import {
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 
-const DEVICE_ACCOUNT_KEY = 'unochess_device_account_v1';
+export const DEVICE_ACCOUNT_KEY = 'unochess_device_account_v1';
 const WAITING_MAGIC_KEY = 'unochess_waiting_magic_v1';
 const PENDING_CHALLENGE_KEY = 'unochess_waiting_challenge_v1';
 const ACTIVE_MATCH_KEY = 'unochess_active_online_match_v1';
@@ -127,7 +127,7 @@ function normalizeLichessElos(raw: unknown): LichessTimeControlElos {
   };
 }
 
-export function isGuaranteedPermanentModerator(
+export function isGuaranteedFounder(
   profile:
     | {
         uid?: string | null;
@@ -144,6 +144,19 @@ export function isGuaranteedPermanentModerator(
   return uid === 'lichess_gatochess89' || (authType === 'lichess' && liUser === 'gatochess89');
 }
 
+export function isGuaranteedPermanentModerator(
+  profile:
+    | {
+        uid?: string | null;
+        authType?: string | null;
+        lichessUsername?: string | null;
+      }
+    | null
+    | undefined
+): boolean {
+  return isGuaranteedFounder(profile);
+}
+
 export function resolveEffectiveRole(
   rawRole: unknown,
   identity: {
@@ -152,6 +165,7 @@ export function resolveEffectiveRole(
     lichessUsername?: string | null;
   }
 ): UserRole {
+  if (isGuaranteedFounder(identity)) return 'founder';
   if (rawRole === 'founder') return 'founder';
   if (isGuaranteedPermanentModerator(identity)) return 'moderator';
   if (rawRole === 'moderator') return 'moderator';
@@ -439,27 +453,159 @@ export async function syncUsernameIndex(uid: string, nickname: string): Promise<
   }
 }
 
+function getCandidatePriority(
+  p: PlayerProfile,
+  founderUid: string,
+  key: string
+): number {
+  if ((founderUid && p.uid === founderUid) || p.role === 'founder') return 0;
+  if (p.uid.toLowerCase() === `lichess_${key}`) return 1;
+  if (
+    p.authType === 'lichess' &&
+    normalizeUsernameKey(p.lichessUsername) === key
+  ) {
+    return 2;
+  }
+  if (p.role === 'moderator') return 3;
+  return 4;
+}
+
+function pickCanonicalCandidate(
+  candidates: PlayerProfile[],
+  founderUid: string,
+  key: string
+): PlayerProfile | null {
+  if (candidates.length === 0) return null;
+  const sorted = [...candidates].sort((a, b) => {
+    const pa = getCandidatePriority(a, founderUid, key);
+    const pb = getCandidatePriority(b, founderUid, key);
+    if (pa !== pb) return pa - pb;
+
+    const gamesA = a.wins + a.losses;
+    const gamesB = b.wins + b.losses;
+    if (gamesA !== gamesB) return gamesB - gamesA;
+
+    const nonDefaultA = a.elo !== 1200 ? 1 : 0;
+    const nonDefaultB = b.elo !== 1200 ? 1 : 0;
+    if (nonDefaultA !== nonDefaultB) return nonDefaultB - nonDefaultA;
+
+    return a.uid.localeCompare(b.uid);
+  });
+  return sorted[0];
+}
+
+export async function findExistingPlayerByNameOrLichess(
+  rawName: string
+): Promise<PlayerProfile | null> {
+  const key = normalizeUsernameKey(rawName);
+  if (key.length < 2) return null;
+
+  let founderUid = '';
+  try {
+    const modSnap = await getDocFromServer(doc(db, 'system', 'moderation')).catch(() =>
+      getDoc(doc(db, 'system', 'moderation'))
+    );
+    if (modSnap.exists()) {
+      founderUid = String(modSnap.data().founderUid ?? '');
+    }
+  } catch {
+    // ignore metadata read failure
+  }
+
+  const foundByUid = new Map<string, PlayerProfile>();
+  const addProfile = (prof: PlayerProfile | null) => {
+    if (prof && prof.uid) {
+      foundByUid.set(prof.uid, prof);
+    }
+  };
+
+  // 1) Direct canonical Lichess document check
+  if (/^[a-z0-9_-]+$/.test(key)) {
+    try {
+      const liSnap = await getDocFromServer(doc(db, 'players', `lichess_${key}`)).catch(() =>
+        getDoc(doc(db, 'players', `lichess_${key}`))
+      );
+      if (liSnap.exists()) {
+        const liProf = mapDocToProfile(liSnap.data() as Record<string, unknown>);
+        addProfile(liProf);
+      }
+    } catch {
+      // ignore missing lichess doc
+    }
+  }
+
+  // 2) Username index check
+  try {
+    const uSnap = await getDocFromServer(doc(db, 'usernames', key)).catch(() =>
+      getDoc(doc(db, 'usernames', key))
+    );
+    if (uSnap.exists()) {
+      const idxUid = String(uSnap.data().uid || '');
+      if (idxUid) {
+        const pSnap = await getDocFromServer(doc(db, 'players', idxUid)).catch(() =>
+          getDoc(doc(db, 'players', idxUid))
+        );
+        if (pSnap.exists()) {
+          const idxProf = mapDocToProfile(pSnap.data() as Record<string, unknown>);
+          if (
+            normalizeUsernameKey(idxProf.nickname) === key ||
+            normalizeUsernameKey(idxProf.lichessUsername) === key ||
+            idxProf.uid.toLowerCase() === `lichess_${key}`
+          ) {
+            addProfile(idxProf);
+          }
+        }
+      }
+    }
+  } catch {
+    // continue to full player scan
+  }
+
+  // 3) Authoritative scan over registered players (handles missing /usernames entries and duplicates)
+  try {
+    const q = query(collection(db, 'players'), where('elo', '>=', 100));
+    const snap = await getDocsFromServer(q).catch(() => null);
+    if (snap) {
+      snap.forEach((docSnap) => {
+        const d = docSnap.data() as Record<string, unknown>;
+        const nickKey = normalizeUsernameKey(String(d.nickname ?? ''));
+        const liKey = normalizeUsernameKey(String(d.lichessUsername ?? ''));
+        const docUid = String(d.uid ?? docSnap.id).toLowerCase();
+        if (nickKey === key || liKey === key || docUid === `lichess_${key}`) {
+          addProfile(mapDocToProfile(d));
+        }
+      });
+    }
+  } catch {
+    // keep results gathered from direct lookups
+  }
+
+  return pickCanonicalCandidate(Array.from(foundByUid.values()), founderUid, key);
+}
+
 export async function ensureGuaranteedModerator(
   profile: PlayerProfile
 ): Promise<PlayerProfile> {
-  if (!isGuaranteedPermanentModerator(profile)) return profile;
-  if (profile.role === 'founder') return profile;
+  const canonicalFounder = isGuaranteedFounder(profile);
+  if (!canonicalFounder && !isGuaranteedPermanentModerator(profile)) return profile;
+  const targetRole: UserRole = canonicalFounder ? 'founder' : 'moderator';
+  if (!canonicalFounder && profile.role === 'founder') return profile;
   const targetRef = doc(db, 'players', profile.uid);
   try {
-    const snap = await getDoc(targetRef);
+    const snap = await getDocFromServer(targetRef).catch(() => getDoc(targetRef));
     if (snap.exists()) {
       const rawRole = snap.data().role;
-      if (rawRole !== 'moderator' && rawRole !== 'founder') {
+      if (canonicalFounder ? rawRole !== 'founder' : rawRole !== 'moderator' && rawRole !== 'founder') {
         await updateDoc(targetRef, {
-          role: 'moderator',
+          role: targetRole,
           updatedAt: serverTimestamp(),
         });
       }
     }
   } catch {
-    // keep effective moderator role locally even if offline temporarily
+    // keep effective role locally even if offline temporarily
   }
-  const enforced: PlayerProfile = { ...profile, role: 'moderator' };
+  const enforced: PlayerProfile = { ...profile, role: targetRole };
   saveDeviceAccountLocally(enforced);
   return enforced;
 }
@@ -469,14 +615,14 @@ export async function ensureFounderIfUnclaimed(
 ): Promise<PlayerProfile> {
   const modRef = doc(db, 'system', 'moderation');
   const playerRef = doc(db, 'players', profile.uid);
+  const canonicalFounder = isGuaranteedFounder(profile);
   try {
     const claimedRole = await runTransaction(db, async (tx): Promise<UserRole> => {
       const modSnap = await tx.get(modRef);
       if (!modSnap.exists()) {
-        const safeNick = profile.nickname.trim().slice(0, 20) || 'Founder';
         tx.set(modRef, {
-          founderUid: profile.uid,
-          founderNickname: safeNick.length >= 2 ? safeNick : 'Founder',
+          founderUid: 'lichess_gatochess89',
+          founderNickname: 'GatoChess89',
           globalSlowModeSec: 0,
           wordFilterEnabled: true,
           chatDisabledGlobally: false,
@@ -484,13 +630,37 @@ export async function ensureFounderIfUnclaimed(
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
-        tx.update(playerRef, {
-          role: 'founder',
-          updatedAt: serverTimestamp(),
-        });
+        if (canonicalFounder) {
+          tx.update(playerRef, {
+            role: 'founder',
+            updatedAt: serverTimestamp(),
+          });
+          return 'founder';
+        }
+        return resolveEffectiveRole(profile.role, profile);
+      }
+
+      const modData = modSnap.data();
+      if (canonicalFounder) {
+        if (
+          modData.founderUid !== profile.uid ||
+          modData.founderNickname !== (profile.nickname || 'GatoChess89')
+        ) {
+          tx.update(modRef, {
+            founderUid: profile.uid,
+            founderNickname: profile.nickname.trim().slice(0, 20) || 'GatoChess89',
+            updatedAt: serverTimestamp(),
+          });
+        }
+        if (profile.role !== 'founder') {
+          tx.update(playerRef, {
+            role: 'founder',
+            updatedAt: serverTimestamp(),
+          });
+        }
         return 'founder';
       }
-      const modData = modSnap.data();
+
       if (modData.founderUid === profile.uid && profile.role !== 'founder') {
         tx.update(playerRef, {
           role: 'founder',
@@ -608,14 +778,32 @@ export async function refreshLichessProfileIfLinked(
   const fresh = await fetchLatestLichessProfile(queryName);
   if (!fresh) return await ensureGuaranteedModerator(profile);
 
+  // Guard against applying another Lichess user's data onto this profile
+  const expectedLower = queryName.trim().toLowerCase();
+  const uidTailLower = profile.uid.replace(/^lichess_/, '').trim().toLowerCase();
+  const freshIdLower = fresh.lichessId.trim().toLowerCase();
+  const freshUserLower = fresh.username.trim().toLowerCase();
+  if (
+    freshIdLower !== expectedLower &&
+    freshUserLower !== expectedLower &&
+    freshIdLower !== uidTailLower
+  ) {
+    return await ensureGuaranteedModerator(profile);
+  }
+
   const merged = mergeFreshLichessElos(profile, fresh);
+  const canonicalFounder = isGuaranteedFounder({
+    uid: profile.uid,
+    authType: 'lichess',
+    lichessUsername: fresh.username,
+  });
   const guaranteedMod = isGuaranteedPermanentModerator({
     uid: profile.uid,
     authType: 'lichess',
     lichessUsername: fresh.username,
   });
   const nextRole: UserRole =
-    profile.role === 'founder'
+    canonicalFounder || profile.role === 'founder'
       ? 'founder'
       : guaranteedMod
       ? 'moderator'
@@ -646,7 +834,9 @@ export async function refreshLichessProfileIfLinked(
       lichessElos: updated.lichessElos,
       updatedAt: serverTimestamp(),
     };
-    if (guaranteedMod && nextRole === 'moderator') {
+    if (nextRole === 'founder') {
+      patch.role = 'founder';
+    } else if (guaranteedMod && nextRole === 'moderator') {
       patch.role = 'moderator';
     }
     await updateDoc(doc(db, 'players', profile.uid), patch);
@@ -669,7 +859,12 @@ export async function syncDeviceAccountWithFirestore(
     if (snap.exists()) {
       const raw = snap.data() as Record<string, unknown>;
       synced = mapDocToProfile(raw);
-      if (
+      if (isGuaranteedFounder(synced) && raw.role !== 'founder') {
+        await updateDoc(ref, {
+          role: 'founder',
+          updatedAt: serverTimestamp(),
+        }).catch(() => {});
+      } else if (
         isGuaranteedPermanentModerator(synced) &&
         raw.role !== 'moderator' &&
         raw.role !== 'founder'
@@ -681,7 +876,9 @@ export async function syncDeviceAccountWithFirestore(
       }
       saveDeviceAccountLocally(synced);
     } else {
-      const initialRole: UserRole = isGuaranteedPermanentModerator(localProfile)
+      const initialRole: UserRole = isGuaranteedFounder(localProfile)
+        ? 'founder'
+        : isGuaranteedPermanentModerator(localProfile)
         ? 'moderator'
         : 'user';
       await setDoc(ref, {
@@ -744,7 +941,15 @@ export function subscribePlayerProfile(
       }
       const raw = snap.data() as Record<string, unknown>;
       const prof = mapDocToProfile(raw);
-      if (
+      if (isGuaranteedFounder(prof) && raw.role !== 'founder' && !selfHealedModUids.has(uid)) {
+        selfHealedModUids.add(uid);
+        void updateDoc(doc(db, 'players', uid), {
+          role: 'founder',
+          updatedAt: serverTimestamp(),
+        }).catch(() => {
+          selfHealedModUids.delete(uid);
+        });
+      } else if (
         isGuaranteedPermanentModerator(prof) &&
         raw.role !== 'moderator' &&
         raw.role !== 'founder' &&
@@ -776,12 +981,34 @@ export async function saveDevicePlayerAccount(
   if (nickname.length < 2) {
     throw new Error('Nickname too short');
   }
+
+  // If signing in / creating on connect screen (no active existingProfile), check for an existing account first!
+  if (!existingProfile) {
+    const matched = await findExistingPlayerByNameOrLichess(nickname);
+    if (matched) {
+      let resolved = await ensureFounderIfUnclaimed(matched);
+      resolved = await ensureGuaranteedModerator(resolved);
+      if (resolved.authType === 'lichess') {
+        resolved = await refreshLichessProfileIfLinked(resolved);
+      }
+      await syncUsernameIndex(resolved.uid, resolved.nickname);
+      saveDeviceAccountLocally(resolved);
+      return resolved;
+    }
+  } else {
+    // Renaming an already logged-in account: do not steal another player's username
+    const matched = await findExistingPlayerByNameOrLichess(nickname);
+    if (matched && matched.uid !== existingProfile.uid) {
+      throw new Error('NICKNAME_TAKEN');
+    }
+  }
+
   const uid = existingProfile?.uid || generateSafeId('dev');
   const path = `players/${uid}`;
   const ref = doc(db, 'players', uid);
 
   try {
-    const existing = await getDoc(ref);
+    const existing = await getDocFromServer(ref).catch(() => getDoc(ref));
     if (!existing.exists()) {
       let created: PlayerProfile = {
         uid,
@@ -817,10 +1044,11 @@ export async function saveDevicePlayerAccount(
         updatedAt: serverTimestamp(),
       });
       await syncUsernameIndex(uid, nickname);
-      const updated = await ensureFounderIfUnclaimed({
+      let updated = await ensureFounderIfUnclaimed({
         ...mapDocToProfile(existing.data() as Record<string, unknown>),
         nickname,
       });
+      updated = await ensureGuaranteedModerator(updated);
       saveDeviceAccountLocally(updated);
       return updated;
     }
@@ -833,22 +1061,41 @@ export async function loginWithLichessProfile(
   lichess: LichessProfileResult
 ): Promise<PlayerProfile> {
   const safeId = lichess.lichessId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48) || 'user';
-  const uid = `lichess_${safeId}`;
-  const path = `players/${uid}`;
-  const ref = doc(db, 'players', uid);
+  const canonicalUid = `lichess_${safeId}`;
+  const canonicalRef = doc(db, 'players', canonicalUid);
   const nickname = lichess.username.trim().slice(0, 20);
   const clampedElo = clampElo(lichess.elo || 1200);
+  const canonicalFounder = isGuaranteedFounder({
+    uid: canonicalUid,
+    authType: 'lichess',
+    lichessUsername: lichess.username,
+  });
   const guaranteedMod = isGuaranteedPermanentModerator({
-    uid,
+    uid: canonicalUid,
     authType: 'lichess',
     lichessUsername: lichess.username,
   });
 
   try {
-    const existing = await getDoc(ref);
+    let targetRef = canonicalRef;
+    let targetUid = canonicalUid;
+    let existing = await getDocFromServer(canonicalRef).catch(() => getDoc(canonicalRef));
+
+    // If canonical lichess_<id> does not exist yet, check if an account with the same Lichess/username already exists!
+    if (!existing.exists()) {
+      const matched =
+        (await findExistingPlayerByNameOrLichess(lichess.username)) ||
+        (await findExistingPlayerByNameOrLichess(lichess.lichessId));
+      if (matched) {
+        targetUid = matched.uid;
+        targetRef = doc(db, 'players', targetUid);
+        existing = await getDocFromServer(targetRef).catch(() => getDoc(targetRef));
+      }
+    }
+
     if (!existing.exists()) {
       let profile: PlayerProfile = {
-        uid,
+        uid: targetUid,
         nickname: nickname.length >= 2 ? nickname : `Li_${safeId}`.slice(0, 20),
         elo: clampedElo,
         wins: 0,
@@ -858,7 +1105,7 @@ export async function loginWithLichessProfile(
         lichessElo: clampedElo,
         elos: lichess.elos,
         lichessElos: lichess.lichessElos,
-        role: guaranteedMod ? 'moderator' : 'user',
+        role: canonicalFounder ? 'founder' : guaranteedMod ? 'moderator' : 'user',
         banned: false,
         suspendedUntilMs: 0,
         chatMuted: false,
@@ -866,12 +1113,12 @@ export async function loginWithLichessProfile(
         warningsCount: 0,
         sanctionReason: '',
       };
-      await setDoc(ref, {
+      await setDoc(targetRef, {
         ...profile,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-      await syncUsernameIndex(uid, profile.nickname);
+      await syncUsernameIndex(targetUid, profile.nickname);
       profile = await ensureFounderIfUnclaimed(profile);
       profile = await ensureGuaranteedModerator(profile);
       saveDeviceAccountLocally(profile);
@@ -890,11 +1137,27 @@ export async function loginWithLichessProfile(
         lichessElos: merged.lichessElos,
         updatedAt: serverTimestamp(),
       };
-      if (guaranteedMod && raw.role !== 'founder' && raw.role !== 'moderator') {
+      const isFounderCandidate =
+        canonicalFounder ||
+        isGuaranteedFounder({
+          uid: targetUid,
+          authType: 'lichess',
+          lichessUsername: lichess.username,
+        });
+      const isModCandidate =
+        guaranteedMod ||
+        isGuaranteedPermanentModerator({
+          uid: targetUid,
+          authType: 'lichess',
+          lichessUsername: lichess.username,
+        });
+      if (isFounderCandidate && raw.role !== 'founder') {
+        patch.role = 'founder';
+      } else if (isModCandidate && raw.role !== 'founder' && raw.role !== 'moderator') {
         patch.role = 'moderator';
       }
-      await updateDoc(ref, patch);
-      await syncUsernameIndex(uid, merged.nickname);
+      await updateDoc(targetRef, patch);
+      await syncUsernameIndex(targetUid, merged.nickname);
       let updated = await ensureFounderIfUnclaimed({
         ...current,
         nickname: merged.nickname,
@@ -905,9 +1168,9 @@ export async function loginWithLichessProfile(
         lichessElo: merged.lichessElo,
         lichessElos: merged.lichessElos,
         role:
-          current.role === 'founder'
+          isFounderCandidate || current.role === 'founder'
             ? 'founder'
-            : guaranteedMod
+            : isModCandidate
             ? 'moderator'
             : current.role,
       });
@@ -916,7 +1179,7 @@ export async function loginWithLichessProfile(
       return updated;
     }
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
+    handleFirestoreError(error, OperationType.WRITE, `players/${canonicalUid}`);
   }
 }
 

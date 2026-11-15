@@ -38,6 +38,7 @@ import {
   getProfileEloForCategory,
 } from '../types/game';
 import {
+  DEVICE_ACCOUNT_KEY,
   acceptLobbyChallenge,
   cancelLobbyChallenge,
   cancelWaitingMatch,
@@ -47,6 +48,7 @@ import {
   getMatchFromServer,
   getOpenChallengesFromServer,
   joinMagicLinkMatch,
+  loadDeviceAccount,
   loadPendingChallengeId,
   loadWaitingMagicMatchId,
   loginWithLichessProfile,
@@ -66,9 +68,11 @@ import {
   moderatorCancelChallenge,
 } from '../services/moderationChatService';
 import {
+  LICHESS_ACK_STORAGE_KEY,
+  LICHESS_AUTH_CHANNEL,
+  LICHESS_CB_STORAGE_KEY,
   createLichessOAuthUrl,
   exchangeLichessCodeForProfile,
-  LICHESS_CB_STORAGE_KEY,
 } from '../services/lichessService';
 import { OfficialLichessLogo } from './OfficialLichessLogo';
 import { sound } from '../utils/audio';
@@ -125,6 +129,7 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
   const [lichessError, setLichessError] = useState('');
   const [lichessFallbackUrl, setLichessFallbackUrl] = useState<string | null>(null);
   const lichessHandledCodeRef = useRef<string | null>(null);
+  const lichessInFlightRef = useRef(false);
   const lichessPollRef = useRef<number | null>(null);
 
   // Lobby state
@@ -208,6 +213,17 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
       }
       if (lichessHandledCodeRef.current === code) return;
       lichessHandledCodeRef.current = code;
+      lichessInFlightRef.current = true;
+      if (mountedRef.current) {
+        setLichessBusy(true);
+        setLichessError('');
+      }
+
+      try {
+        localStorage.setItem(LICHESS_ACK_STORAGE_KEY, state);
+      } catch {
+        // ignore storage errors
+      }
 
       try {
         const lichessData = await exchangeLichessCodeForProfile(code, state);
@@ -219,10 +235,13 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
         setEditingNickname(false);
         onProfileSaved(saved);
       } catch {
+        // Allow retry if exchange failed transiently
+        lichessHandledCodeRef.current = null;
         if (mountedRef.current) {
           setLichessError(t('onlineLichessError'));
         }
       } finally {
+        lichessInFlightRef.current = false;
         if (mountedRef.current) {
           setLichessBusy(false);
         }
@@ -231,45 +250,111 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
     [onProfileSaved, t]
   );
 
-  // Listen for Lichess OAuth callback via postMessage or localStorage
+  // Listen for Lichess OAuth callback via BroadcastChannel, postMessage, storage, and leftover callback
   useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin) return;
-      const data = event.data as {
+    const processPayload = (rawData: unknown) => {
+      if (!rawData || typeof rawData !== 'object') return;
+      const data = rawData as {
         type?: string;
         code?: string;
         state?: string;
         error?: string;
-      } | null;
-      if (data?.type === 'LICHESS_OAUTH_CALLBACK') {
+        profile?: PlayerProfile;
+      };
+      if (data.type === 'LICHESS_OAUTH_CALLBACK') {
         void completeLichessCallback(data.code || '', data.state || '', data.error);
+      } else if (data.type === 'LICHESS_PROFILE_READY' && data.profile) {
+        if (lichessPollRef.current !== null) {
+          clearInterval(lichessPollRef.current);
+          lichessPollRef.current = null;
+        }
+        lichessInFlightRef.current = false;
+        if (mountedRef.current) {
+          sound.playSpecial();
+          setLichessBusy(false);
+          setLichessFallbackUrl(null);
+          setLichessError('');
+          setEditingNickname(false);
+          onProfileSaved(data.profile);
+        }
       }
     };
 
+    const handleMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      processPayload(event.data);
+    };
+
     const handleStorage = (event: StorageEvent) => {
-      if (event.key !== LICHESS_CB_STORAGE_KEY || !event.newValue) return;
-      try {
-        const data = JSON.parse(event.newValue) as {
+      if (event.key === LICHESS_CB_STORAGE_KEY && event.newValue) {
+        try {
+          processPayload(JSON.parse(event.newValue));
+        } catch {
+          // ignore malformed payload
+        }
+        return;
+      }
+      if (event.key === DEVICE_ACCOUNT_KEY && event.newValue) {
+        const latestAcc = loadDeviceAccount();
+        if (latestAcc && latestAcc.authType === 'lichess' && mountedRef.current) {
+          if (lichessPollRef.current !== null) {
+            clearInterval(lichessPollRef.current);
+            lichessPollRef.current = null;
+          }
+          lichessInFlightRef.current = false;
+          setLichessBusy(false);
+          setLichessFallbackUrl(null);
+          setLichessError('');
+          setEditingNickname(false);
+          onProfileSaved(latestAcc);
+        }
+      }
+    };
+
+    let channel: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        channel = new BroadcastChannel(LICHESS_AUTH_CHANNEL);
+        channel.onmessage = (event: MessageEvent) => {
+          processPayload(event.data);
+        };
+      }
+    } catch {
+      // BroadcastChannel unavailable
+    }
+
+    // Consume any fresh callback stored right before mount
+    try {
+      const pendingRaw = localStorage.getItem(LICHESS_CB_STORAGE_KEY);
+      if (pendingRaw) {
+        const pending = JSON.parse(pendingRaw) as {
           type?: string;
           code?: string;
           state?: string;
           error?: string;
+          ts?: number;
         };
-        if (data?.type === 'LICHESS_OAUTH_CALLBACK') {
-          void completeLichessCallback(data.code || '', data.state || '', data.error);
+        if (
+          pending?.type === 'LICHESS_OAUTH_CALLBACK' &&
+          (!pending.ts || Date.now() - pending.ts < 120_000)
+        ) {
+          processPayload(pending);
         }
-      } catch {
-        // ignore malformed payload
       }
-    };
+    } catch {
+      // ignore storage errors
+    }
 
     window.addEventListener('message', handleMessage);
     window.addEventListener('storage', handleStorage);
     return () => {
       window.removeEventListener('message', handleMessage);
       window.removeEventListener('storage', handleStorage);
+      if (channel) {
+        channel.close();
+      }
     };
-  }, [completeLichessCallback]);
+  }, [completeLichessCallback, onProfileSaved]);
 
   const profileUid = profile?.uid ?? '';
 
@@ -585,8 +670,12 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
       const saved = await saveDevicePlayerAccount(trimmed, editingNickname ? profile : null);
       onProfileSaved(saved);
       setEditingNickname(false);
-    } catch {
-      setNicknameError(t('onlineAuthError'));
+    } catch (err) {
+      if (err instanceof Error && err.message === 'NICKNAME_TAKEN') {
+        setNicknameError(t('onlineNicknameTaken'));
+      } else {
+        setNicknameError(t('onlineAuthError'));
+      }
     } finally {
       setSavingNickname(false);
     }
@@ -598,11 +687,26 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
     setLichessError('');
     setLichessFallbackUrl(null);
 
+    // Open popup synchronously inside click gesture so browsers never block it after async await
+    let popup: Window | null = null;
+    try {
+      popup = window.open('about:blank', 'unochess_lichess_oauth', 'width=540,height=720');
+    } catch {
+      popup = null;
+    }
+
     try {
       const { authUrl } = await createLichessOAuthUrl();
-      // Open Lichess OAuth provider URL directly in popup
-      const popup = window.open(authUrl, 'unochess_lichess_oauth', 'width=540,height=720');
-      if (!popup) {
+      if (!popup || popup.closed) {
+        setLichessBusy(false);
+        setLichessFallbackUrl(authUrl);
+        setLichessError(t('onlineLichessPopupBlocked'));
+        return;
+      }
+
+      try {
+        popup.location.href = authUrl;
+      } catch {
         setLichessBusy(false);
         setLichessFallbackUrl(authUrl);
         setLichessError(t('onlineLichessPopupBlocked'));
@@ -612,6 +716,8 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
       if (lichessPollRef.current !== null) {
         clearInterval(lichessPollRef.current);
       }
+
+      let closedDetectedAt: number | null = null;
       lichessPollRef.current = window.setInterval(() => {
         try {
           const raw = localStorage.getItem(LICHESS_CB_STORAGE_KEY);
@@ -627,7 +733,15 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
               return;
             }
           }
-          if (popup.closed) {
+          if (popup && popup.closed) {
+            if (lichessInFlightRef.current) return;
+            if (closedDetectedAt === null) {
+              closedDetectedAt = Date.now();
+              return;
+            }
+            // Wait ~800ms grace period so same-tick localStorage / BroadcastChannel writes settle
+            if (Date.now() - closedDetectedAt < 800) return;
+
             if (lichessPollRef.current !== null) {
               clearInterval(lichessPollRef.current);
               lichessPollRef.current = null;
@@ -639,8 +753,13 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
         } catch {
           // ignore cross-origin check while popup is on lichess.org
         }
-      }, 500);
+      }, 150);
     } catch {
+      try {
+        if (popup && !popup.closed) popup.close();
+      } catch {
+        // ignore
+      }
       setLichessBusy(false);
       setLichessError(t('onlineLichessError'));
     }
@@ -1108,7 +1227,7 @@ export const OnlineLobbyView: React.FC<OnlineLobbyViewProps> = ({
                 {lichessFallbackUrl && (
                   <a
                     href={lichessFallbackUrl}
-                    target="_top"
+                    target="_self"
                     className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-extrabold text-slate-950 shadow"
                   >
                     <OfficialLichessLogo className="h-4 w-4" />

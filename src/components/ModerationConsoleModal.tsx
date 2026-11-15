@@ -249,14 +249,27 @@ export const ModerationConsoleModal: React.FC<ModerationConsoleModalProps> = ({
     }
   };
 
+  const resolvePromoteDemoteQuery = () => {
+    const typed = searchQuery.trim();
+    if (!typed) return targetUser?.uid || '';
+    if (
+      targetUser &&
+      (typed.toLowerCase() === targetUser.nickname.trim().toLowerCase() ||
+        typed === targetUser.uid)
+    ) {
+      return targetUser.uid;
+    }
+    return typed;
+  };
+
   const handlePromoteInput = async () => {
-    const q = (targetUser?.uid || searchQuery).trim();
+    const q = resolvePromoteDemoteQuery();
     if (!q) return;
     await runUserAction(() => promoteModeratorByUsername(actor, q));
   };
 
   const handleDemoteInput = async () => {
-    const q = (targetUser?.uid || searchQuery).trim();
+    const q = resolvePromoteDemoteQuery();
     if (!q) return;
     await runUserAction(() => demoteModeratorByUsername(actor, q));
   };
@@ -586,7 +599,7 @@ export const ModerationConsoleModal: React.FC<ModerationConsoleModalProps> = ({
                               {u.nickname}
                             </span>
                             {roleBadge(u.role)}
-                            {isGuaranteedPermanentModerator(u) && (
+                            {u.role !== 'founder' && isGuaranteedPermanentModerator(u) && (
                               <span className="rounded bg-amber-400/20 px-1.5 py-0.2 text-[9px] font-extrabold text-amber-300">
                                 {t('modPermModBadge')}
                               </span>
@@ -622,7 +635,7 @@ export const ModerationConsoleModal: React.FC<ModerationConsoleModalProps> = ({
                           {targetUser.nickname}
                         </span>
                         {roleBadge(targetUser.role)}
-                        {isGuaranteedPermanentModerator(targetUser) && (
+                        {targetUser.role !== 'founder' && isGuaranteedPermanentModerator(targetUser) && (
                           <span className="rounded-md bg-amber-400/20 px-1.5 py-0.5 text-[10px] font-extrabold text-amber-300">
                             {t('modPermModBadge')}
                           </span>

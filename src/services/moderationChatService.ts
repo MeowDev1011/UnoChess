@@ -32,6 +32,7 @@ import {
   cancelLobbyChallenge,
   clampElo,
   db,
+  findExistingPlayerByNameOrLichess,
   generateSafeId,
   handleFirestoreError,
   isGuaranteedPermanentModerator,
@@ -770,47 +771,9 @@ export async function lookupPlayerByUsername(
     }
   }
 
-  // 2) Normalized username lookup (with guaranteed priority for Lichess GatoChess89)
-  const key = normalizeUsernameKey(trimmed);
-  if (key === 'gatochess89') {
-    try {
-      const liSnap = await getDocFromServer(doc(db, 'players', 'lichess_gatochess89'));
-      if (liSnap.exists()) {
-        return mapDocToProfile(liSnap.data() as Record<string, unknown>);
-      }
-    } catch {
-      // continue to username index
-    }
-  }
-
-  if (key.length >= 2) {
-    try {
-      const uSnap = await getDocFromServer(doc(db, 'usernames', key));
-      if (uSnap.exists()) {
-        const uid = String(uSnap.data().uid || '');
-        if (uid) {
-          const pSnap = await getDocFromServer(doc(db, 'players', uid));
-          if (pSnap.exists()) {
-            return mapDocToProfile(pSnap.data() as Record<string, unknown>);
-          }
-        }
-      }
-    } catch {
-      // continue to lichess fallback
-    }
-
-    // 3) Fallback: try lichess_<key> directly if not yet in usernames index
-    if (/^[a-z0-9_\-]+$/.test(key)) {
-      try {
-        const liFallback = await getDocFromServer(doc(db, 'players', `lichess_${key}`));
-        if (liFallback.exists()) {
-          return mapDocToProfile(liFallback.data() as Record<string, unknown>);
-        }
-      } catch {
-        // ignore
-      }
-    }
-  }
+  // 2) Normalized canonical lookup (Founder priority, Lichess canonical, wins/elo tiebreak, full scan fallback)
+  const canonical = await findExistingPlayerByNameOrLichess(trimmed);
+  if (canonical) return canonical;
 
   return null;
 }
